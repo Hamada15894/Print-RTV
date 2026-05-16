@@ -252,6 +252,9 @@ input[type=file]{display:none}
   <div class="rb">
     <div class="rc"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
     <h2>اكتمل بنجاح</h2><p id="rd_">—</p>
+    <button id="history-btn" onclick="toggleHistoryPanel()" style="display:none;width:100%;padding:10px;background:linear-gradient(135deg,#4a1d96,#7c3aed);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-top:6px;display:none;align-items:center;justify-content:center;gap:8px">
+      &#128194; سجل الملفات المحوّلة <span id="history-count" style="background:rgba(255,255,255,.2);padding:1px 7px;border-radius:10px;font-size:11px">0</span>
+    </button>
     <a id="dl" class="btn-dl" download="RTV_Report.xlsx">
       <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>تحميل ملف Excel
     </a>
@@ -264,7 +267,7 @@ input[type=file]{display:none}
     <div class="rn">ورقتان: تفصيل المنتجات · ملخص بالإجماليات</div>
     <button id="nqc-btn" class="btn-dl" style="background:linear-gradient(135deg,#1a3c6e,#2563a8);margin-top:10px;display:none" onclick="printNQC()">
       <svg viewBox="0 0 24 24" style="width:18px;height:18px;flex-shrink:0"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z" stroke="white" fill="none" stroke-width="1.8"/></svg>
-      طباعة NQC Form
+      طباعة RTV Form
     </button>
     <button id="pdf-btn" class="btn-dl" style="background:linear-gradient(135deg,#7b1c1c,#c0392b);margin-top:10px;display:none" onclick="downloadNQCPDF()">
       <svg viewBox="0 0 24 24" style="width:18px;height:18px;flex-shrink:0"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="white" fill="none" stroke-width="1.8"/><polyline points="14 2 14 8 20 8" stroke="white" fill="none" stroke-width="1.8"/><line x1="12" y1="18" x2="12" y2="12" stroke="white" stroke-width="1.8"/><polyline points="9 15 12 18 15 15" stroke="white" fill="none" stroke-width="1.8"/></svg>
@@ -379,7 +382,7 @@ function enrichRow(row) {
     row.brand       = sku.brand || '';
   } else {
     row.zrep      = '';
-    row.mars_desc = '';
+    row.mars_desc = row.description || ''; // fallback to PDF desc
     row.category  = '';
     row.brand     = '';
   }
@@ -730,6 +733,7 @@ const DEF_COLS=[
   {key:'store_num',      label:'Store #',           color:'375623', on:true},
   {key:'store_name',     label:'Store Name',        color:'375623', on:true},
   {key:'city',           label:'City',              color:'375623', on:true},
+  {key:'region',         label:'Region',            color:'1A5276', on:true},
   {key:'account',        label:'Account',           color:'375623', on:true},
   {key:'customer_code',  label:'Customer Code',     color:'375623', on:true},
   {key:'salesman',       label:'Salesman',          color:'375623', on:true},
@@ -897,7 +901,7 @@ function lk(n,isFarm){
   return r?mksi(r):{account:'',code:'',name:'',city:'',salesman:''};
 }
 function mksi(r){
-  const o={account:r.a||r.account||'',code:r.c||r.code||'',name:r.n||r.name||'',city:r.ci||r.city||'',salesman:r.s||r.salesman||''};
+  const o={account:r.a||r.account||'',code:r.c||r.code||'',name:r.n||r.name||'',city:r.ci||r.city||'',region:r.rg||r.region||'',salesman:r.s||r.salesman||''};
   EXTRA_COLS.filter(c=>c.srcKey).forEach(c=>{o['x_'+c.srcKey]=r[c.srcKey]??'';});
   return o;
 }
@@ -926,7 +930,7 @@ $('si').addEventListener('change',e=>{
     rows.forEach(r=>{
       const sn=parseInt(r['Store#']||0);
       if(sn){const e={a:String(r['Account']||'').trim(),c:String(r['Customer Code']||'').trim(),
-        n:String(r['Customer_name2']||'').trim(),ci:String(r['City']||'').trim(),s:String(r['Salsman']||'').trim()};
+        n:String(r['Customer_name2']||'').trim(),ci:String(r['City']||'').trim(),rg:String(r['Region']||r['region']||'').trim(),s:String(r['Salsman']||'').trim()};
         Object.assign(e,r);STORE[sn]=e;}
     });
     $('ss_').innerHTML=`<span>✓ ${Object.keys(STORE).length} متجر محمّل</span>`;
@@ -1169,7 +1173,7 @@ function parseTamimi(lines,text){
   const rows=[],seen=new Set();
   lines.forEach(l=>{
     const line=lineText(l);
-    const m=line.match(/^(\d{6})\s+(.+?)\s+([\d.]+)\s+(EA|PAC|PC)\s+([\d.]+)\s+Per\s+(?:EA|PAC|PC)\s+([\d.]+)\s+(\d+)\s+%\s+([\d.]+)\s+\S+\s*$/);
+    const m=line.match(/^(\d{6})\s+(.+?)\s+([\d.]+)\s+(EA|PAC|PC|CAS|BOX|CTN|BAG|SET)\s+([\d.]+)\s+Per\s+(?:EA|PAC|PC|CAS|BOX|CTN|BAG|SET)\s+([\d.]+)\s+(\d+)\s+%\s+([\d.]+)\s+\S+\s*$/);
     if(m){const k=`${m[1]}-${m[6]}`;if(seen.has(k))return;seen.add(k);
       const ex=+m[6],v=+m[8];
       rows.push({...h,item_number:zp(m[1]),description:m[2].trim(),
@@ -1382,7 +1386,7 @@ function r2(n){return Math.round((n||0)*100)/100;}
 function mkhdr(snum,rtv,dt,po,ipr,isFarm){
   const si=lk(snum,isFarm);
   const base={rtv_date:dt,rtv_number:rtv,po_number:po,internal_ref:ipr,
-    store_num:snum,store_name:si.name,city:si.city,account:si.account,
+    store_num:snum,store_name:si.name,city:si.city,region:si.region||'',account:si.account,
     customer_code:si.code,salesman:si.salesman};
   // extra store columns
   EXTRA_COLS.filter(c=>c.srcKey).forEach(c=>{base[`extra_${c.key}`]=si[`extra_${c.key}`]||'';});
@@ -1513,10 +1517,23 @@ async function runConversion(){
   }catch(e){}
 
   $('dl').href=url;
-  $('dl').download=`RTV_Report_${new Date().toISOString().slice(0,10)}.xlsx`;
+  const _dlDate=new Date().toISOString().slice(0,10);
+  $('dl').download='RTV_Report_'+_dlDate+'.xlsx';
+  setTimeout(function(){
+    try{
+      var _ex=allRows.reduce(function(s,r){return s+(r.price_ex_vat||0);},0).toFixed(2);
+      var _st=[...new Set(allRows.map(function(r){return r.store_name;}).filter(Boolean))].join(', ');
+      var _fn='RTV_Report_'+_dlDate+'.xlsx';
+      var _url=$('dl').href||'';
+      addToHistory({date:_dlDate,filename:_fn,stores:_st,items:allRows.length,exvat:_ex,xlsxUrl:_url});
+    }catch(e){}
+  },600);
   $('ab').classList.add('hidden');
   $('cr').classList.remove('hidden');
   $('cr').scrollIntoView({behavior:'smooth'});
+  // ── إعادة تفعيل الزر بعد انتهاء التحويل ──
+  btn.disabled=false;
+  btn.innerHTML='<svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3" stroke="white" fill="none" stroke-width="2"/></svg> تحويل إلى Excel';
 }
 
 
@@ -1580,9 +1597,9 @@ function buildXLSX(rows,stats){
 
   const wsD=XLSX.utils.aoa_to_sheet(dData);
   wsD['!cols']=allCols.map(c=>{
-    const wMap={rtv_date:12,rtv_number:14,po_number:14,internal_ref:18,store_num:8,
-      store_name:36,city:14,account:10,customer_code:14,salesman:12,
-      item_number:12,description:40,qty:7,unit:6,unit_price:12,
+    const wMap={rtv_date:13,rtv_number:16,po_number:15,internal_ref:20,store_num:9,
+      store_name:36,city:14,region:12,account:10,customer_code:14,salesman:12,
+      item_number:14,description:48,qty:7,unit:7,unit_price:13,
       price_ex_vat:14,vat_amt:12,total_incl_vat:14};
     return{wch:wMap[c.key]||14};
   });
@@ -1600,13 +1617,13 @@ function buildXLSX(rows,stats){
   XLSX.utils.book_append_sheet(wb,wsD,'RTV Line Details');
 
   // ── Sheet 2: Summary ──
-  const SH=['RTV Date','RTV / Ref #','PO Number','Store #','Store Name','City',
+  const SH=['RTV Date','RTV / Ref #','PO Number','Store #','Store Name','City','Region',
             'Account','Customer Code','Salesman','# Items',
             'Excl. VAT (SAR)','VAT (SAR)','Total incl. VAT (SAR)'];
   const SC=['1F4E79','1F4E79','1F4E79','375623','375623','375623','375623','375623','375623','843C0C','843C0C','843C0C','843C0C'];
   const sData=[SH];
   stats.forEach(s=>{const si=lk(s.store);
-    sData.push([s.dt,s.rtv,s.po||'',s.store,s.sname||si.name,si.city,s.acct,si.code,si.salesman,s.n,r2(s.ex),r2(s.vat),r2(s.tot)]);});
+    sData.push([s.dt,s.rtv,s.po||'',s.store,s.sname||si.name,si.city,si.region||'',s.acct,si.code,si.salesman,s.n,r2(s.ex),r2(s.vat),r2(s.tot)]);});
   sData.push([]);
   const sEx=r2(stats.reduce((x,s)=>x+s.ex,0));
   const sVat=r2(stats.reduce((x,s)=>x+s.vat,0));
@@ -1637,263 +1654,217 @@ function buildXLSX(rows,stats){
 // NQC FORM SHEET BUILDER — pixel-perfect match to image
 // ══════════════════════════════════════════════════════════
 function buildNQCSheets(wb, rows){
+  // تجميع الصفوف بالـ RTV مع إزالة المكرر
   const byRTV={};
   rows.forEach(r=>{
     const key=r.rtv_number||'UNKNOWN';
     if(!byRTV[key]) byRTV[key]=[];
     byRTV[key].push(r);
   });
+  Object.keys(byRTV).forEach(k=>{
+    const seen=new Set();
+    byRTV[k]=byRTV[k].filter(r=>{
+      const dk=`${r.item_number}-${r.qty}-${r2(r.price_ex_vat)}`;
+      if(seen.has(dk))return false; seen.add(dk); return true;
+    });
+  });
 
-  Object.entries(byRTV).forEach(([rtvNum, rtvRows])=>{
+  Object.entries(byRTV).forEach(([rtvNum,rtvRows])=>{
     const ws={};
     const si=rtvRows[0];
 
-    // ── border helpers ──
-    const bThin={top:{style:'thin',color:{rgb:'AAAAAA'}},bottom:{style:'thin',color:{rgb:'AAAAAA'}},left:{style:'thin',color:{rgb:'AAAAAA'}},right:{style:'thin',color:{rgb:'AAAAAA'}}};
-    const bMed ={top:{style:'medium',color:{rgb:'888888'}},bottom:{style:'medium',color:{rgb:'888888'}},left:{style:'medium',color:{rgb:'888888'}},right:{style:'medium',color:{rgb:'888888'}}};
+    // ── borders ──
+    const bThin={top:{style:'thin',color:{rgb:'BBBBBB'}},bottom:{style:'thin',color:{rgb:'BBBBBB'}},left:{style:'thin',color:{rgb:'BBBBBB'}},right:{style:'thin',color:{rgb:'BBBBBB'}}};
+    const bMed ={top:{style:'medium',color:{rgb:'1A3C6E'}},bottom:{style:'medium',color:{rgb:'1A3C6E'}},left:{style:'medium',color:{rgb:'1A3C6E'}},right:{style:'medium',color:{rgb:'1A3C6E'}}};
     const bData={top:{style:'thin',color:{rgb:'CCCCCC'}},bottom:{style:'thin',color:{rgb:'CCCCCC'}},left:{style:'thin',color:{rgb:'CCCCCC'}},right:{style:'thin',color:{rgb:'CCCCCC'}}};
 
-    // ── style objects ──
-    // MARS logo: big bold blue italic
-    const sMarsLogo={font:{bold:true,italic:true,color:{rgb:'00008B'},name:'Arial Black',sz:28},
-      alignment:{horizontal:'center',vertical:'center'}};
-    // "NQC FORM" center top
-    const sNqcTitle={font:{bold:true,color:{rgb:'000000'},name:'Arial',sz:14},
-      alignment:{horizontal:'center',vertical:'center'}};
-    // Company name top right
-    const sCompany={font:{bold:true,color:{rgb:'000000'},name:'Arial',sz:11},
-      alignment:{horizontal:'center',vertical:'center'}};
-    // Label cells (grey background, bold)
-    const sLbl={font:{bold:true,name:'Arial',sz:10},
-      fill:{patternType:'solid',fgColor:{rgb:'D9D9D9'}},
-      alignment:{horizontal:'left',vertical:'center'},border:bThin};
-    // Plain value cells
-    const sVal={font:{name:'Arial',sz:10},
-      alignment:{horizontal:'left',vertical:'center'},border:bThin};
-    // Blue value (Customer Code, Region)
-    const sValBlue={font:{bold:true,color:{rgb:'0070C0'},name:'Arial',sz:10},
-      alignment:{horizontal:'left',vertical:'center'},border:bThin};
-    // GCN value blue
-    const sGcnBlue={font:{bold:true,color:{rgb:'0070C0'},name:'Arial',sz:11},
-      alignment:{horizontal:'left',vertical:'center'},border:bThin};
-    // RTV number: red bold on yellow
-    const sRtvVal={font:{bold:true,color:{rgb:'FF0000'},name:'Arial',sz:12},
-      fill:{patternType:'solid',fgColor:{rgb:'FFFF00'}},
-      alignment:{horizontal:'left',vertical:'center'},border:bThin};
-    // Store name top-right large blue hyperlink style
-    const sStoreName={font:{bold:true,color:{rgb:'0070C0'},name:'Arial',sz:14},
-      alignment:{horizontal:'right',vertical:'center'}};
-    // Totals bar: QTY number grey
-    const sTotQtyLbl={font:{bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:10},
-      fill:{patternType:'solid',fgColor:{rgb:'808080'}},
-      alignment:{horizontal:'right',vertical:'center'},border:bThin};
-    const sTotQtyVal={font:{bold:true,color:{rgb:'FF0000'},name:'Arial',sz:12},
-      fill:{patternType:'solid',fgColor:{rgb:'FFFF00'}},
-      alignment:{horizontal:'center',vertical:'center'},border:bMed};
-    // "Including VAT" red label
-    const sIncVat={font:{bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:10},
-      fill:{patternType:'solid',fgColor:{rgb:'FF0000'}},
-      alignment:{horizontal:'center',vertical:'center'},border:bThin};
-    // IncVAT value yellow
-    const sIncVatVal={font:{bold:true,color:{rgb:'FF0000'},name:'Arial',sz:12},
-      fill:{patternType:'solid',fgColor:{rgb:'FFFF00'}},
-      alignment:{horizontal:'center',vertical:'center'},border:bMed};
-    // "Excluding VAT" blue label
-    const sExVat={font:{bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:10},
-      fill:{patternType:'solid',fgColor:{rgb:'0070C0'}},
-      alignment:{horizontal:'center',vertical:'center'},border:bThin};
-    // ExVAT value yellow
-    const sExVatVal={font:{bold:true,color:{rgb:'FF0000'},name:'Arial',sz:12},
-      fill:{patternType:'solid',fgColor:{rgb:'FFFF00'}},
-      alignment:{horizontal:'center',vertical:'center'},border:bMed};
-    // Column headers: dark grey bg white text
-    const sColHdr={font:{bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:10},
-      fill:{patternType:'solid',fgColor:{rgb:'404040'}},
-      alignment:{horizontal:'center',vertical:'center',wrapText:true},
-      border:{top:{style:'thin',color:{rgb:'FFFFFF'}},bottom:{style:'thin',color:{rgb:'FFFFFF'}},
-        left:{style:'thin',color:{rgb:'FFFFFF'}},right:{style:'thin',color:{rgb:'FFFFFF'}}}};
-    // Data cells center
-    const sDC={font:{name:'Arial',sz:10},
-      alignment:{horizontal:'center',vertical:'center'},border:bData};
-    // Data cells left (description)
-    const sDCL={font:{name:'Arial',sz:10},
-      alignment:{horizontal:'left',vertical:'center'},border:bData};
-    // Alternating row (light blue stripe)
-    const sDCalt={font:{name:'Arial',sz:10},
-      fill:{patternType:'solid',fgColor:{rgb:'EEF4FF'}},
-      alignment:{horizontal:'center',vertical:'center'},border:bData};
-    const sDCLalt={font:{name:'Arial',sz:10},
-      fill:{patternType:'solid',fgColor:{rgb:'EEF4FF'}},
-      alignment:{horizontal:'left',vertical:'center'},border:bData};
+    // ── styles ──
+    const sMars={font:{bold:true,italic:true,color:{rgb:'00008B'},name:'Arial Black',sz:32},alignment:{horizontal:'center',vertical:'center'}};
+    const sRtvTitle={font:{bold:true,color:{rgb:'000000'},name:'Arial',sz:16},alignment:{horizontal:'center',vertical:'center'}};
+    const sCompany={font:{bold:true,color:{rgb:'000000'},name:'Arial',sz:10},alignment:{horizontal:'center',vertical:'center'}};
+    const sLbl={font:{bold:true,name:'Arial',sz:9},fill:{patternType:'solid',fgColor:{rgb:'D9D9D9'}},alignment:{horizontal:'left',vertical:'center'},border:bThin};
+    const sVal={font:{name:'Arial',sz:9},alignment:{horizontal:'left',vertical:'center'},border:bThin};
+    const sValBlu={font:{bold:true,color:{rgb:'0070C0'},name:'Arial',sz:9},alignment:{horizontal:'left',vertical:'center',wrapText:true},border:bThin};
+    const sRtvNum={font:{bold:true,color:{rgb:'FF0000'},name:'Arial',sz:11},fill:{patternType:'solid',fgColor:{rgb:'FFFF00'}},alignment:{horizontal:'center',vertical:'center'},border:bMed};
+    const sTotQty={font:{bold:true,color:{rgb:'FF0000'},name:'Arial',sz:11},fill:{patternType:'solid',fgColor:{rgb:'FFFF00'}},alignment:{horizontal:'center',vertical:'center'},border:bMed};
+    const sIncLbl={font:{bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:9},fill:{patternType:'solid',fgColor:{rgb:'FF0000'}},alignment:{horizontal:'center',vertical:'center'},border:bThin};
+    const sIncVal={font:{bold:true,color:{rgb:'FF0000'},name:'Arial',sz:11},fill:{patternType:'solid',fgColor:{rgb:'FFFF00'}},alignment:{horizontal:'center',vertical:'center'},border:bMed};
+    const sExcLbl={font:{bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:9},fill:{patternType:'solid',fgColor:{rgb:'0070C0'}},alignment:{horizontal:'center',vertical:'center'},border:bThin};
+    const sExcVal={font:{bold:true,color:{rgb:'FF0000'},name:'Arial',sz:11},fill:{patternType:'solid',fgColor:{rgb:'FFFF00'}},alignment:{horizontal:'center',vertical:'center'},border:bMed};
+    const sColHdr={font:{bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:9},fill:{patternType:'solid',fgColor:{rgb:'1A3C6E'}},alignment:{horizontal:'center',vertical:'center',wrapText:true},border:bThin};
+    const sDC={font:{name:'Arial',sz:9},alignment:{horizontal:'center',vertical:'center'},border:bData};
+    const sDCL={font:{name:'Arial',sz:9},alignment:{horizontal:'left',vertical:'center',wrapText:true},border:bData};
+    const sDCalt={font:{name:'Arial',sz:9},fill:{patternType:'solid',fgColor:{rgb:'DDEEFF'}},alignment:{horizontal:'center',vertical:'center'},border:bData};
+    const sDCLalt={font:{name:'Arial',sz:9},fill:{patternType:'solid',fgColor:{rgb:'DDEEFF'}},alignment:{horizontal:'left',vertical:'center',wrapText:true},border:bData};
+    const sDCR={font:{name:'Arial',sz:9},alignment:{horizontal:'right',vertical:'center'},border:bData};
+    const sDCRalt={font:{name:'Arial',sz:9},fill:{patternType:'solid',fgColor:{rgb:'DDEEFF'}},alignment:{horizontal:'right',vertical:'center'},border:bData};
+    const sSigHdr={font:{bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:9},fill:{patternType:'solid',fgColor:{rgb:'1A3C6E'}},alignment:{horizontal:'center',vertical:'center'},border:bThin};
+    const sSigVal={font:{name:'Arial',sz:8},alignment:{horizontal:'left',vertical:'top'},border:bThin};
 
-    // ── helpers ──
     function sc(row,col,val,style,type){
       const ref=XLSX.utils.encode_cell({r:row,c:col});
-      ws[ref]={v:val, t:type||'s'};
+      ws[ref]={v:val,t:type||'s'};
       if(style) ws[ref].s=style;
     }
     function mg(r1,r2,c1,c2){
       if(!ws['!merges']) ws['!merges']=[];
       ws['!merges'].push({s:{r:r1,c:c1},e:{r:r2,c:c2}});
     }
+    function n(v){return Number(v)||0;}
 
-    // ═══════════════════════════════════════════════
-    // COLUMN MAP (12 cols, 0-11):
-    // A(0)  = MARS ZRE        wch=9
-    // B(1)  = Category        wch=11
-    // C(2)  = Brand           wch=10
-    // D(3)  = Description (wide, merges D:G) wch=30
-    // E(4)  = (part of desc)  wch=5
-    // F(5)  = (part of desc)  wch=5
-    // G(6)  = (part of desc)  wch=5
-    // H(7)  = QTY in Pcs      wch=9
-    // I(8)  = Pc Value        wch=9
-    // J(9)  = Reason          wch=9
-    // K(10) = Expiry date     wch=11
-    // L(11) = Total Amount    wch=12
-    // ═══════════════════════════════════════════════
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // COLUMN MAP (12 cols A-L):
+    // A(0)=ZREP  B(1)=Cat  C(2)=Brand
+    // D-G(3-6)=Description(merged)
+    // H(7)=QTY  I(8)=PcVal  J(9)=Reason  K(10)=Expiry  L(11)=Total
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    // ── ROW 0-1: Header banner ──
-    // Left: MARS logo spans rows 0-1, cols 0-3
-    mg(0,1,0,3);
-    sc(0,0,'MARS',sMarsLogo);
+    // ROW 0: MARS | RTV FORM | Company
+    mg(0,1,0,2); sc(0,0,'MARS',sMars);
+    mg(0,0,3,7); sc(0,3,'RTV FORM',sRtvTitle);
+    mg(0,0,8,11); sc(0,8,'MARS Saudi Arabia For Trading Co.LTD',sCompany);
 
-    // Center: NQC FORM row 0, cols 4-7
-    mg(0,0,4,7);
-    sc(0,4,'NQC FORM',sNqcTitle);
+    // ROW 1: blue separator
+    mg(1,1,3,11); sc(1,3,'',{fill:{patternType:'solid',fgColor:{rgb:'1A3C6E'}}});
 
-    // Right: Company name row 0, cols 8-11
-    mg(0,0,8,11);
-    sc(0,8,'MARS Saudi Arabia For Trading Co.LTD',sCompany);
-
-    // Row 1 center/right filler (empty, white)
-    mg(1,1,4,11);
-    sc(1,4,'',{alignment:{horizontal:'center',vertical:'center'}});
-
-    // ── ROW 2: Customer Site # | Customer Name ──
+    // ROW 2: Customer Site | Customer Name
     mg(2,2,0,1); sc(2,0,'Customer Site #',sLbl);
-    mg(2,2,2,3); sc(2,2,'',sVal);
-    // right side
-    mg(2,2,4,4); sc(2,4,'',sVal); // spacer
+    mg(2,2,2,2); sc(2,2,'',sVal);
+    mg(2,2,3,4); sc(2,3,'',{border:bThin});
     mg(2,2,5,6); sc(2,5,'Customer Name:',sLbl);
-    mg(2,2,7,11); sc(2,7,si.store_name||'',sVal);
+    mg(2,2,7,11); sc(2,7,si.store_name||'',sValBlu);
 
-    // ── ROW 3: GCN No | Salesman Name | Customer Code ──
+    // ROW 3: GCN | Salesman
     sc(3,0,'GCN No:',sLbl);
-    mg(3,3,1,3); sc(3,1,'',sGcnBlue); // GCN value blank
-    mg(3,3,4,4); sc(3,4,'Salesman Name:',sLbl);
-    mg(3,3,5,8); sc(3,5,si.salesman||'',sVal);
-    sc(3,9,'Customer Code:',sLbl);
-    mg(3,3,10,11); sc(3,10,String(si.customer_code||''),sValBlue);
+    mg(3,3,1,2); sc(3,1,'',sVal);
+    mg(3,3,3,4); sc(3,3,'',{border:bThin});
+    mg(3,3,5,6); sc(3,5,'Salesman Name:',sLbl);
+    mg(3,3,7,11); sc(3,7,si.salesman||'',sVal);
 
-    // ── ROW 4: RTV No | Salesment WH | Customer Region ──
+    // ROW 4: RTV No | WH | Customer Code
     sc(4,0,'RTV No:',sLbl);
-    mg(4,4,1,3); sc(4,1,String(rtvNum),sRtvVal);
-    mg(4,4,4,5); sc(4,4,'Salesment WH',sLbl);
-    mg(4,4,6,8); sc(4,6,'',sVal); // WH value
-    sc(4,9,'Customer Region:',sLbl);
-    mg(4,4,10,11); sc(4,10,si.city||'',sValBlue);
+    mg(4,4,1,2); sc(4,1,String(rtvNum),sRtvNum);
+    mg(4,4,3,4); sc(4,3,'',{border:bThin});
+    mg(4,4,5,6); sc(4,5,'Salesment WH',sLbl);
+    mg(4,4,7,8); sc(4,7,'',sVal);
+    sc(4,9,'Customer Code:',sLbl);
+    mg(4,4,10,11); sc(4,10,String(si.customer_code||''),sValBlu);
 
-    // ── ROW 5: Store Name (left) + Totals bar (right) ──
-    const totQty   = r2(rtvRows.reduce((s,r)=>s+(r.qty||0),0));
-    const totIncVAT= r2(rtvRows.reduce((s,r)=>s+(r.total_incl_vat||0),0));
-    const totExVAT = r2(rtvRows.reduce((s,r)=>s+(r.price_ex_vat||0),0));
+    // ROW 5: Store Name | Totals
+    const totQty   =r2(rtvRows.reduce((s,r)=>s+n(r.qty),0));
+    const totIncVAT=r2(rtvRows.reduce((s,r)=>s+n(r.total_incl_vat),0));
+    const totExVAT =r2(rtvRows.reduce((s,r)=>s+n(r.price_ex_vat),0));
 
-    // "Store Name:" label + value (spans left side)
-    mg(5,5,0,2); sc(5,0,'Store Name:',sLbl);
-    mg(5,5,3,5); sc(5,3,si.store_name||'',sStoreName);
+    sc(5,0,'Store Name:',sLbl);
+    mg(5,5,1,4); sc(5,1,si.store_name||'',sValBlu);
+    sc(5,5,'',{border:bThin});
+    sc(5,6,totQty,sTotQty,'n');
+    sc(5,7,'Including VAT',sIncLbl);
+    mg(5,5,8,9); sc(5,8,totIncVAT,sIncVal,'n');
+    sc(5,10,'Excluding VAT',sExcLbl);  // ← تصحيح: ExcVAT في العمود 10
+    sc(5,11,totExVAT,sExcVal,'n');
 
-    // QTY total (grey label + yellow value)
-    sc(5,6,totQty,sTotQtyVal,'n');
-    // Including VAT
-    sc(5,7,'Including VAT',sIncVat);
-    sc(5,8,totIncVAT,sIncVatVal,'n');
-    // Excluding VAT
-    sc(5,9,'Excluding VAT',sExVat);
-    mg(5,5,10,11); sc(5,10,totExVAT,sExVatVal,'n');
+    // ROW 6: Customer Region
+    sc(6,0,'Customer Region:',sLbl);
+    mg(6,6,1,4); sc(6,1,si.city||si.region||'',sValBlu);
 
-    // ── ROW 6: Column headers ──
-    sc(6,0,'MARS ZRE',sColHdr);
-    sc(6,1,'Category',sColHdr);
-    sc(6,2,'Brand',sColHdr);
-    mg(6,6,3,6); sc(6,3,'Description',sColHdr);
-    sc(6,7,'QTY in Pcs',sColHdr);
-    sc(6,8,'Pc Value',sColHdr);
-    sc(6,9,'Reason',sColHdr);
-    sc(6,10,'Expiry date',sColHdr);
-    sc(6,11,'Total Amount',sColHdr);
+    // ROW 7: Column Headers
+    sc(7,0,'MARS\nZREP',sColHdr);
+    sc(7,1,'Category',sColHdr);
+    sc(7,2,'Brand',sColHdr);
+    mg(7,7,3,6); sc(7,3,'Description',sColHdr);
+    sc(7,7,'QTY\nPcs',sColHdr);
+    sc(7,8,'Pc\nValue',sColHdr);
+    sc(7,9,'Reason',sColHdr);
+    sc(7,10,'Expiry\nDate',sColHdr);
+    sc(7,11,'Total\nAmt',sColHdr);
 
-    // ── ROW 7+: Data rows ──
-    let dataRow=7;
+    // ROW 8+: Data
+    let dataRow=8;
     rtvRows.forEach((r,idx)=>{
       const alt=idx%2===1;
       const dc=alt?sDCalt:sDC;
       const dcl=alt?sDCLalt:sDCL;
-      // Pc Value = unit_price if available, else price_ex_vat / qty
-      const pcVal=r.unit_price||(r.qty?r2((r.price_ex_vat||0)/(r.qty||1)):0);
-      sc(dataRow,0,r.item_number||'',dc);
+      const dcr=alt?sDCRalt:sDCR;
+      const pcVal=r.unit_price||(r.qty?r2(n(r.price_ex_vat)/n(r.qty||1)):0);
+      sc(dataRow,0,r.zrep||r.item_number||'',dc);
       sc(dataRow,1,r.category||'',dc);
       sc(dataRow,2,r.brand||'',dc);
-      mg(dataRow,dataRow,3,6); sc(dataRow,3,r.description||'',dcl);
-      sc(dataRow,7,r.qty||0,dc,'n');
-      sc(dataRow,8,r2(pcVal),dc,'n');
+      mg(dataRow,dataRow,3,6); sc(dataRow,3,r.mars_desc||r.description||'',dcl);
+      sc(dataRow,7,n(r.qty),dc,'n');
+      sc(dataRow,8,r2(pcVal),dcr,'n');
       sc(dataRow,9,r.reason||'Expiry',dc);
       sc(dataRow,10,r.expiry_date||'',dc);
-      sc(dataRow,11,r2(r.total_incl_vat||0),dc,'n');
+      sc(dataRow,11,r2(n(r.total_incl_vat)),dcr,'n');
       dataRow++;
     });
 
-    // ── Column widths ──
+    // Signature rows
+    const gapRow=dataRow;
+    sc(gapRow,0,'',{});
+    const sigRow=gapRow+1;
+    mg(sigRow,sigRow,0,3); sc(sigRow,0,'Sales Representative',sSigHdr);
+    mg(sigRow,sigRow,4,7); sc(sigRow,4,'Receiver / Store Manager',sSigHdr);
+    mg(sigRow,sigRow,8,11); sc(sigRow,8,'Supervisor Approval',sSigHdr);
+    const nRow=sigRow+1;
+    mg(nRow,nRow,0,3); sc(nRow,0,'Name: ________________________________',sSigVal);
+    mg(nRow,nRow,4,7); sc(nRow,4,'Name: ________________________________',sSigVal);
+    mg(nRow,nRow,8,11); sc(nRow,8,'Name: ________________________________',sSigVal);
+    const sRow=nRow+1;
+    mg(sRow,sRow,0,3); sc(sRow,0,'Signature: __________________  Date: __________',sSigVal);
+    mg(sRow,sRow,4,7); sc(sRow,4,'Signature: __________________  Date: __________',sSigVal);
+    mg(sRow,sRow,8,11); sc(sRow,8,'Signature: __________________  Date: __________',sSigVal);
+
+    const lastRow=sRow;
+
+    // Column widths — مضبوطة لتناسب A4
     ws['!cols']=[
-      {wch:9},   // A MARS ZRE
-      {wch:11},  // B Category
+      {wch:9},   // A ZREP
+      {wch:13},  // B Category
       {wch:10},  // C Brand
-      {wch:28},  // D Description (wide)
-      {wch:4},   // E
-      {wch:4},   // F
-      {wch:4},   // G
-      {wch:9},   // H QTY
+      {wch:30},  // D Description
+      {wch:2},{wch:2},{wch:2}, // E F G (hidden, part of merge)
+      {wch:7},   // H QTY
       {wch:9},   // I Pc Value
-      {wch:9},   // J Reason
-      {wch:11},  // K Expiry date
-      {wch:13},  // L Total Amount
+      {wch:8},   // J Reason
+      {wch:10},  // K Expiry Date
+      {wch:13},  // L Total Amt
     ];
 
-    // ── Row heights ──
+    // Row heights
     ws['!rows']=[];
-    ws['!rows'][0]={hpt:36};  // logo row
-    ws['!rows'][1]={hpt:10};  // thin separator
+    ws['!rows'][0]={hpt:44};
+    ws['!rows'][1]={hpt:4};
     ws['!rows'][2]={hpt:18};
     ws['!rows'][3]={hpt:18};
-    ws['!rows'][4]={hpt:20};
+    ws['!rows'][4]={hpt:18};
     ws['!rows'][5]={hpt:22};
-    ws['!rows'][6]={hpt:26};  // col headers
-    for(let i=7;i<dataRow;i++) ws['!rows'][i]={hpt:17};
+    ws['!rows'][6]={hpt:18};
+    ws['!rows'][7]={hpt:28};
+    for(let i=8;i<dataRow;i++) ws['!rows'][i]={hpt:15};
+    ws['!rows'][gapRow]={hpt:6};
+    ws['!rows'][sigRow]={hpt:20};
+    ws['!rows'][nRow]={hpt:22};
+    ws['!rows'][sRow]={hpt:22};
 
-    // ── Sheet range ──
-    ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:dataRow,c:11}});
+    ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:lastRow,c:11}});
 
-    // ── Print: Portrait, A4, fit width=1 ──
+    // ── Fit to 1 page wide when printing ──
     ws['!pageSetup']={
       orientation:'portrait',
-      paperSize:9,        // A4
+      paperSize:9,       // A4
       fitToPage:true,
-      fitToWidth:1,
-      fitToHeight:0,
+      fitToWidth:1,      // ← هذا يجعل كل شيء في عرض صفحة واحدة
+      fitToHeight:0,     // ← عدد الصفحات الطولية غير محدود
       scale:100
     };
     ws['!printOptions']={gridLines:false,headings:false};
-    ws['!margins']={left:0.4,right:0.4,top:0.5,bottom:0.5,header:0.2,footer:0.2};
+    ws['!margins']={left:0.35,right:0.35,top:0.5,bottom:0.5,header:0.2,footer:0.2};
 
-    // ── Freeze pane: freeze header rows ──
-    ws['!freeze']={xSplit:0,ySplit:7,topLeftCell:'A8',activePane:'bottomLeft'};
-
-    const shName=('NQC_'+String(rtvNum)).slice(0,31);
+    const shName=('RTV_'+String(rtvNum)).slice(0,31);
     XLSX.utils.book_append_sheet(wb,ws,shName);
   });
 }
-
-
 // ══════════════════════════════════════════════════════════
 // ORIGINAL PDF DOWNLOAD
 // ══════════════════════════════════════════════════════════
@@ -2000,7 +1971,7 @@ function _showNQCDialog(byRTV, rtvKeys, pdfMode=false){
   overlay.innerHTML=`
     <div style="background:#1e2330;border:1px solid #3a4460;border-radius:14px;padding:22px;width:100%;max-width:480px;max-height:90vh;display:flex;flex-direction:column;gap:0">
 
-      <h3 style="color:#f1f5f9;font-size:15px;margin-bottom:2px">${pdfMode?'📄 تحميل PDF':'🖨 إعداد NQC Form'}</h3>
+      <h3 style="color:#f1f5f9;font-size:15px;margin-bottom:2px">${pdfMode?'📄 تحميل PDF':'🖨 إعداد RTV Form'}</h3>
       <p style="color:#94a3b8;font-size:11px;margin-bottom:14px">${pdfMode?'اختر الوثائق وأدخل البيانات — سيتم حفظ PDF لكل وثيقة':'اختر الوثائق وأدخل البيانات الإضافية قبل الطباعة'}</p>
 
       <!-- RTV LIST (only if >1) -->
@@ -2087,190 +2058,184 @@ function _showNQCDialog(byRTV, rtvKeys, pdfMode=false){
 }
 
 function _renderNQCPrint(byRTV,keys,md={},pdfMode=false){
-  const fmt=n=>Number(n).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:2});
+  const fmt=n=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
   const gcn  = md.gcn   || '';
   const site = md.site  || '';
   const wh   = md.wh    || '';
-  const pdate= md.date  || '';
+  const pdate= md.date  || new Date().toISOString().slice(0,10);
   const notes= md.notes || '';
-  let pages='';
 
-  keys.forEach((rtvNum,pi)=>{
-    const rtvRows=byRTV[rtvNum];
-    if(!rtvRows||!rtvRows.length) return;
+  function buildPageHTML(rtvNum, rtvRows){
     const si=rtvRows[0];
-    const totQty   =r2(rtvRows.reduce((s,r)=>s+(r.qty||0),0));
-    const totIncVAT=r2(rtvRows.reduce((s,r)=>s+(r.total_incl_vat||0),0));
-    const totExVAT =r2(rtvRows.reduce((s,r)=>s+(r.price_ex_vat||0),0));
+    const totQty   =r2(rtvRows.reduce((s,r)=>s+(+r.qty||0),0));
+    const totIncVAT=r2(rtvRows.reduce((s,r)=>s+(+r.total_incl_vat||0),0));
+    const totExVAT =r2(rtvRows.reduce((s,r)=>s+(+r.price_ex_vat||0),0));
 
     const dataRows=rtvRows.map((r,i)=>{
-      const zrep=r.zrep||r.item_number||'';
-      const pcVal=r.unit_price||(r.qty?r2((r.price_ex_vat||0)/(r.qty||1)):0);
-      const bg=i%2===0?'#fff':'#ddeeff';
-      return `<tr style="background:${bg}">
-        <td>${zrep}</td><td>${r.category||''}</td><td>${r.brand||''}</td>
-        <td style="text-align:left;padding-left:5px">${r.description||''}</td>
-        <td>${r.qty||''}</td><td>${fmt(pcVal)}</td>
-        <td>${r.reason||'Expiry'}</td><td>${r.expiry_date||''}</td>
-        <td>${fmt(r.total_incl_vat||0)}</td>
+      const pcVal=r.unit_price||(r.qty?r2((+r.price_ex_vat||0)/(+r.qty||1)):0);
+      const bg=i%2===1?'background:#ddeeff':'background:#fff';
+      return `<tr>
+        <td style="text-align:center;${bg}">${r.zrep||r.item_number||''}</td>
+        <td style="${bg}">${r.category||''}</td>
+        <td style="${bg}">${r.brand||''}</td>
+        <td style="text-align:left;${bg}">${r.mars_desc||r.description||''}</td>
+        <td style="text-align:center;${bg}">${r.qty||''}</td>
+        <td style="text-align:right;${bg}">${fmt(pcVal)}</td>
+        <td style="text-align:center;${bg}">${r.reason||'Expiry'}</td>
+        <td style="text-align:center;${bg}">${r.expiry_date||''}</td>
+        <td style="text-align:right;${bg}">${fmt(+r.total_incl_vat||0)}</td>
       </tr>`;
     }).join('');
 
-    pages+=`
-    <div class="page"${pi>0?' style="page-break-before:always"':''}>
-      <table class="hdr"><tr>
-        <td class="mars" rowspan="2">MARS</td>
-        <td class="nqct">NQC FORM</td>
-        <td class="coname">MARS Saudi Arabia For Trading Co.LTD</td>
-      </tr><tr><td colspan="2" style="background:#eee;height:4px;padding:0"></td></tr></table>
+    return `<div class="rtv-page">
+<table class="t-hdr"><tr>
+  <td class="mars" rowspan="2">MARS</td>
+  <td class="rtv-lbl">RTV FORM</td>
+  <td class="co-name">MARS Saudi Arabia For Trading Co.LTD</td>
+</tr><tr>
+  <td colspan="2" style="background:#1a3c6e;height:3px;padding:0;border:none"></td>
+</tr></table>
 
-      <table class="info">
-        <tr>
-          <td class="L">Customer Site #</td><td class="V" style="width:100px">${site}</td><td class="SP"></td>
-          <td class="L">Customer Name:</td><td class="V B" colspan="3">${si.store_name||''}</td>
-        </tr><tr>
-          <td class="L">GCN No:</td><td class="V B">${gcn}</td><td class="SP"></td>
-          <td class="L">Salesman Name:</td><td class="V" colspan="3">${si.salesman||''}</td>
-        </tr><tr>
-          <td class="L">RTV No:</td><td class="RTV">${rtvNum}</td><td class="SP"></td>
-          <td class="L">Salesment WH</td><td class="V" style="width:50px">${wh}</td>
-          <td class="L">Customer Code:</td><td class="V B">${si.customer_code||''}</td>
-        </tr><tr>
-          <td class="L" colspan="2">Store Name: <span class="SN">${si.store_name||''}</span></td>
-          <td class="SP" colspan="2"></td>
-          <td class="INCL">Including VAT</td><td class="YEL" colspan="2">${fmt(totIncVAT)}</td>
-        </tr><tr>
-          <td class="L">Customer Region:</td><td class="V B" colspan="2">${si.city||''}</td>
-          <td class="TOTQ">${totQty}</td><td></td>
-          <td class="EXCL">Excluding VAT</td><td class="YEL">${fmt(totExVAT)}</td>
-        </tr>
-      </table>
+<table class="t-info">
+<tr>
+  <td class="L">Customer Site #</td><td class="V" style="width:80px">${site}</td>
+  <td class="SP"></td>
+  <td class="L">Customer Name:</td><td class="VB" colspan="3">${si.store_name||''}</td>
+</tr><tr>
+  <td class="L">GCN No:</td><td class="VB">${gcn}</td>
+  <td class="SP"></td>
+  <td class="L">Salesman Name:</td><td class="V" colspan="3">${si.salesman||''}</td>
+</tr><tr>
+  <td class="L">RTV No:</td><td class="RTV">${rtvNum}</td>
+  <td class="SP"></td>
+  <td class="L">Salesment WH</td><td class="V" style="width:60px">${wh}</td>
+  <td class="L">Customer Code:</td><td class="VB">${si.customer_code||''}</td>
+</tr><tr>
+  <td class="L">Store Name:</td><td class="VB" colspan="2">${si.store_name||''}</td>
+  <td class="SP"></td>
+  <td class="TOTQ">${totQty}</td>
+  <td class="INC">Including VAT</td><td class="INCV">${fmt(totIncVAT)}</td>
+</tr><tr>
+  <td class="L">Customer Region:</td><td class="VB" colspan="2">${si.city||si.region||''}</td>
+  <td class="SP"></td><td></td>
+  <td class="EXC">Excluding VAT</td><td class="EXCV">${fmt(totExVAT)}</td>
+</tr>
+</table>
 
-      <table class="dt">
-        <thead><tr>
-          <th>MARS<br>ZREP</th><th>Category</th><th>Brand</th><th>Description</th>
-          <th>QTY<br>Pcs</th><th>Pc<br>Value</th><th>Reason</th><th>Expiry<br>Date</th><th>Total<br>Amt</th>
-        </tr></thead>
-        <tbody>${dataRows}</tbody>
-      </table>
+<table class="t-data">
+<thead><tr>
+  <th style="width:42px">MARS<br>ZREP</th>
+  <th style="width:70px">Category</th>
+  <th style="width:56px">Brand</th>
+  <th style="width:180px">Description</th>
+  <th style="width:32px">QTY<br>Pcs</th>
+  <th style="width:44px">Pc<br>Value</th>
+  <th style="width:44px">Reason</th>
+  <th style="width:44px">Expiry<br>Date</th>
+  <th style="width:52px">Total<br>Amt</th>
+</tr></thead>
+<tbody>${dataRows}</tbody>
+</table>
 
-      <table class="sig">
-        <tr>
-          <td><div class="sL">Sales Representative</div><div class="sS">Name: _________________________ &nbsp; Date: ____________</div></td>
-          <td><div class="sL">Receiver / Store Manager</div><div class="sS">Name: _________________________ &nbsp; Date: ____________</div></td>
-          <td><div class="sL">Supervisor Approval</div><div class="sS">Name: _________________________ &nbsp; Date: ____________</div></td>
-        </tr>
-      </table>
-      ${(pdate||notes)?`<div style="margin-top:5px;font-size:7.5pt;color:#444;display:flex;gap:20px;flex-wrap:wrap">
-        ${pdate?`<span><b>Date:</b> ${pdate}</span>`:''}
-        ${notes?`<span><b>Notes:</b> ${notes}</span>`:''}
-      </div>`:''}
-    </div>`;
-  });
+<table class="t-sig">
+<tr>
+  <th>Sales Representative</th>
+  <th>Receiver / Store Manager</th>
+  <th>Supervisor Approval</th>
+</tr><tr>
+  <td>Name: <u>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</u><br><br>Signature: <u>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</u>&nbsp; Date: <u>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</u></td>
+  <td>Name: <u>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</u><br><br>Signature: <u>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</u>&nbsp; Date: <u>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</u></td>
+  <td>Name: <u>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</u><br><br>Signature: <u>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</u>&nbsp; Date: <u>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</u></td>
+</tr>
+</table>
+${pdate?`<p class="footer-date">Date: ${pdate}${notes?' | Notes: '+notes:''}</p>`:''}
+</div>`;
+  }
+
+  const css=`
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Arial,sans-serif;font-size:8pt;color:#000;background:#fff}
+.rtv-page{width:195mm;margin:0 auto;padding:3mm 0}
+/* HEADER */
+.t-hdr{width:100%;border-collapse:collapse;margin-bottom:2px}
+.mars{font-family:'Arial Black',Arial,sans-serif;font-size:28pt;font-weight:900;
+  font-style:italic;color:#00008B;text-align:center;vertical-align:middle;
+  width:30mm;padding:1mm;border:1px solid #bbb;line-height:1.1}
+.rtv-lbl{font-size:13pt;font-weight:700;text-align:center;vertical-align:middle;
+  border:1px solid #bbb;padding:1mm;width:40mm}
+.co-name{font-size:9pt;font-weight:700;text-align:center;vertical-align:middle;
+  border:1px solid #bbb;padding:1mm}
+/* INFO */
+.t-info{width:100%;border-collapse:collapse;margin-bottom:2px}
+.t-info td{padding:1.5px 3px;font-size:7.5pt;border:0.5px solid #bbb;vertical-align:middle}
+.L{background:#d9d9d9;font-weight:700;white-space:nowrap;width:80px}
+.V{background:#fff}.VB{color:#0070C0;font-weight:700;background:#fff}
+.SP{width:5px;border:none;background:#fff}
+.RTV{background:#FFFF00;color:#FF0000;font-weight:700;font-size:10pt;text-align:center}
+.TOTQ{background:#FFFF00;color:#FF0000;font-weight:700;font-size:10pt;
+  text-align:center;border:1.5px solid #888;width:36px}
+.INC{background:#FF0000;color:#fff;font-weight:700;text-align:center;
+  font-size:7.5pt;white-space:nowrap}
+.INCV{background:#FFFF00;color:#FF0000;font-weight:700;font-size:10pt;
+  text-align:center;border:1.5px solid #888;width:70px}
+.EXC{background:#0070C0;color:#fff;font-weight:700;text-align:center;
+  font-size:7.5pt;white-space:nowrap}
+.EXCV{background:#FFFF00;color:#FF0000;font-weight:700;font-size:10pt;
+  text-align:center;border:1.5px solid #888}
+/* DATA TABLE */
+.t-data{width:100%;border-collapse:collapse;margin-bottom:2px;table-layout:fixed}
+.t-data thead tr th{background:#1a3c6e;color:#fff;font-size:7pt;font-weight:700;
+  text-align:center;padding:2px 1px;border:0.5px solid #1a3c6e;line-height:1.3;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact}
+.t-data tbody tr td{font-size:7pt;padding:1px 2px;border:0.5px solid #ccc;
+  vertical-align:middle;word-break:break-word}
+/* REPEAT HEADER ON EVERY PRINT PAGE */
+thead{display:table-header-group}
+/* SIGNATURE */
+.t-sig{width:100%;border-collapse:collapse;border:1px solid #1a3c6e;
+  page-break-inside:avoid;-webkit-column-break-inside:avoid}
+.t-sig th{background:#1a3c6e;color:#fff;font-weight:700;font-size:7.5pt;
+  text-align:center;padding:3px;border:0.5px solid #1a3c6e;width:33%;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact}
+.t-sig td{padding:3px 5px;border:0.5px solid #bbb;font-size:7pt;height:40px;vertical-align:top}
+.footer-date{font-size:6.5pt;color:#555;margin-top:2px}
+@media print{
+  body{margin:0}
+  .rtv-page{width:100%;padding:2mm 0}
+  @page{size:A4 portrait;margin:8mm 6mm}
+  thead{display:table-header-group}
+  .t-sig{page-break-inside:avoid}
+  .t-hdr,.t-info{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  th,td{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}`;
+
+  function openWindow(htmlContent){
+    const w=window.open('','_blank');
+    if(w){w.document.write(htmlContent);w.document.close();}
+  }
 
   if(pdfMode){
-    // PDF mode: one window per RTV with auto-print-to-PDF prompt
-    keys.forEach((rtvNum,pi)=>{
+    keys.forEach(rtvNum=>{
       const rtvRows=byRTV[rtvNum];
       if(!rtvRows||!rtvRows.length) return;
-
-      // Build single-page HTML for this RTV only
-      const singleHtml=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<title>NQC_${rtvNum}</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:Arial,sans-serif;font-size:9pt;background:#fff;color:#000}
-.page{width:210mm;padding:5mm 6mm;margin:auto}
-.hdr{width:100%;border-collapse:collapse;margin-bottom:3px}
-.mars{font-family:"Arial Black",Arial,sans-serif;font-size:30pt;font-weight:900;font-style:italic;color:#00008B;text-align:center;vertical-align:middle;width:130px;line-height:1}
-.nqct{font-size:13pt;font-weight:bold;text-align:center;vertical-align:middle;width:170px}
-.coname{font-size:10pt;font-weight:bold;text-align:center;vertical-align:middle}
-.info{width:100%;border-collapse:collapse;margin-bottom:3px}
-.info td{padding:2px 4px;font-size:8pt}
-.L{background:#d9d9d9;font-weight:bold;border:1px solid #aaa;white-space:nowrap}
-.V{border:1px solid #aaa}.B{color:#0070C0;font-weight:bold}.SP{width:6px;border:none}
-.RTV{background:#FFFF00;color:#FF0000;font-weight:bold;font-size:10pt;border:1px solid #aaa;text-align:center}
-.SN{color:#0070C0;font-weight:bold;font-size:10pt;margin-left:8px}
-.TOTQ{background:#FFFF00;color:#FF0000;font-weight:bold;font-size:10pt;border:2px solid #888;text-align:center;width:50px}
-.INCL{background:#FF0000;color:#fff;font-weight:bold;text-align:center;border:1px solid #f00;white-space:nowrap;padding:2px 5px}
-.EXCL{background:#0070C0;color:#fff;font-weight:bold;text-align:center;border:1px solid #07C;white-space:nowrap;padding:2px 5px}
-.YEL{background:#FFFF00;color:#FF0000;font-weight:bold;font-size:10pt;border:2px solid #888;text-align:center}
-.dt{width:100%;border-collapse:collapse;margin-bottom:3px}
-.dt th{background:#404040;color:#fff;font-size:7.5pt;font-weight:bold;text-align:center;padding:3px 2px;border:1px solid #555;line-height:1.2}
-.dt td{font-size:7.5pt;text-align:center;padding:2px 2px;border:1px solid #ccc;line-height:1.2}
-.sig{width:100%;border-collapse:collapse;margin-top:4px;border:1px solid #aaa}
-.sig td{width:33.3%;padding:5px 8px;border:1px solid #aaa;vertical-align:top}
-.sL{font-weight:bold;font-size:8pt;padding-bottom:16px;border-bottom:1px solid #555;margin-bottom:4px}
-.sS{font-size:7pt;color:#555;padding-top:3px}
-@media print{body{margin:0}.page{padding:3mm 4mm}@page{size:A4 portrait;margin:6mm}}
-</style></head><body>
-${pages.split('page-break-before:always')[pi]||pages}
-<script>
-// Auto-trigger Save as PDF
-window.onload=function(){
-  document.title='NQC_${rtvNum}';
-  window.print();
-};
-<\/script>
-</body></html>`;
-
-      setTimeout(()=>{
-        const w=window.open('','_blank','width=900,height=750');
-        if(!w){ alert('السماح بالنوافذ المنبثقة مطلوب لتحميل PDF'); return; }
-        w.document.write(singleHtml);
-        w.document.close();
-      }, pi*600); // stagger to avoid popup blocker
+      const body=buildPageHTML(rtvNum,rtvRows);
+      openWindow(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<title>RTV_${rtvNum}</title><style>${css}</style></head><body>${body}
+<script>window.onload=function(){document.title='RTV_${rtvNum}';window.print();};<\/script>
+</body></html>`);
     });
-
-    // Show tip
-    const tip=document.createElement('div');
-    tip.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1e2330;border:1px solid #3b82f6;border-radius:8px;padding:12px 20px;color:#f1f5f9;font-size:12px;z-index:9999;text-align:center;max-width:420px';
-    tip.innerHTML=`📄 <b>في نافذة الطباعة:</b> اختر <b style="color:#60a5fa">"Save as PDF"</b> أو <b style="color:#60a5fa">"حفظ كـ PDF"</b> من قائمة الطابعات`;
-    document.body.appendChild(tip);
-    setTimeout(()=>tip.remove(), 7000);
-
   } else {
-    // Print mode: all RTVs in one window
-    const html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>NQC Form</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:Arial,sans-serif;font-size:9pt;background:#fff;color:#000}
-.page{width:210mm;padding:5mm 6mm;margin:auto}
-.hdr{width:100%;border-collapse:collapse;margin-bottom:3px}
-.mars{font-family:"Arial Black",Arial,sans-serif;font-size:30pt;font-weight:900;font-style:italic;color:#00008B;text-align:center;vertical-align:middle;width:130px;line-height:1}
-.nqct{font-size:13pt;font-weight:bold;text-align:center;vertical-align:middle;width:170px}
-.coname{font-size:10pt;font-weight:bold;text-align:center;vertical-align:middle}
-.info{width:100%;border-collapse:collapse;margin-bottom:3px}
-.info td{padding:2px 4px;font-size:8pt}
-.L{background:#d9d9d9;font-weight:bold;border:1px solid #aaa;white-space:nowrap}
-.V{border:1px solid #aaa}.B{color:#0070C0;font-weight:bold}.SP{width:6px;border:none}
-.RTV{background:#FFFF00;color:#FF0000;font-weight:bold;font-size:10pt;border:1px solid #aaa;text-align:center}
-.SN{color:#0070C0;font-weight:bold;font-size:10pt;margin-left:8px}
-.TOTQ{background:#FFFF00;color:#FF0000;font-weight:bold;font-size:10pt;border:2px solid #888;text-align:center;width:50px}
-.INCL{background:#FF0000;color:#fff;font-weight:bold;text-align:center;border:1px solid #f00;white-space:nowrap;padding:2px 5px}
-.EXCL{background:#0070C0;color:#fff;font-weight:bold;text-align:center;border:1px solid #07C;white-space:nowrap;padding:2px 5px}
-.YEL{background:#FFFF00;color:#FF0000;font-weight:bold;font-size:10pt;border:2px solid #888;text-align:center}
-.dt{width:100%;border-collapse:collapse;margin-bottom:3px}
-.dt th{background:#404040;color:#fff;font-size:7.5pt;font-weight:bold;text-align:center;padding:3px 2px;border:1px solid #555;line-height:1.2}
-.dt td{font-size:7.5pt;text-align:center;padding:2px 2px;border:1px solid #ccc;line-height:1.2}
-.sig{width:100%;border-collapse:collapse;margin-top:4px;border:1px solid #aaa}
-.sig td{width:33.3%;padding:5px 8px;border:1px solid #aaa;vertical-align:top}
-.sL{font-weight:bold;font-size:8pt;padding-bottom:16px;border-bottom:1px solid #555;margin-bottom:4px}
-.sS{font-size:7pt;color:#555;padding-top:3px}
-@media print{body{margin:0}.page{padding:3mm 4mm}@page{size:A4 portrait;margin:0}}
-</style></head><body>
-${pages}
-<script>window.onload=function(){window.print();}<\/script>
-</body></html>`;
-    const w=window.open('','_blank','width=900,height=750');
-    w.document.write(html);
-    w.document.close();
+    let allPages=keys.map(k=>{
+      const rtvRows=byRTV[k];
+      if(!rtvRows||!rtvRows.length) return '';
+      return buildPageHTML(k,rtvRows);
+    }).join('<div style="page-break-after:always"></div>');
+    openWindow(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<title>RTV Form</title><style>${css}</style></head><body>${allPages}
+<script>window.onload=function(){window.print();};<\/script>
+</body></html>`);
   }
 }
-
-
-// ══════════════════════════════════════════════════════════
-// ══════════════════════════════════════════════════════════
 function reset_(){
   FILES=[];STORE=null;
   $('fl').innerHTML='';$('lb').innerHTML='';
@@ -2284,5 +2249,104 @@ function reset_(){
 }
 
 </script>
+
+<!-- ══ HISTORY PANEL ══ -->
+<div id="history-panel" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9998;align-items:center;justify-content:center">
+  <div style="background:#1e293b;border-radius:16px;padding:24px;width:min(94vw,680px);max-height:85vh;overflow-y:auto;border:1px solid #334155;box-shadow:0 20px 60px rgba(0,0,0,.6)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h2 style="color:#f1f5f9;font-size:16px;font-weight:700;margin:0">&#128194; سجل الملفات المحوّلة</h2>
+      <button onclick="closeHistoryPanel()" style="background:#334155;border:none;color:#94a3b8;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px">&#10005; إغلاق</button>
+    </div>
+    <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+      <label style="color:#94a3b8;font-size:12px">من:</label>
+      <input type="date" id="hist-from" onchange="renderHistoryList()" style="background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:5px 10px;font-size:12px">
+      <label style="color:#94a3b8;font-size:12px">إلى:</label>
+      <input type="date" id="hist-to" onchange="renderHistoryList()" style="background:#0f172a;border:1px solid #334155;color:#f1f5f9;border-radius:6px;padding:5px 10px;font-size:12px">
+      <button onclick="clearHistoryFilters()" style="background:#334155;border:none;color:#94a3b8;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px">&#128260; إعادة تعيين</button>
+      <button onclick="clearAllHistory()" style="background:#7f1d1d;border:none;color:#fca5a5;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px">&#128465; حذف الكل</button>
+    </div>
+    <div id="history-list" style="display:flex;flex-direction:column;gap:8px"></div>
+    <p id="history-empty" style="color:#64748b;text-align:center;font-size:13px;padding:20px;display:none">لا توجد سجلات</p>
+  </div>
+</div>
+
+<script>
+var HIST_KEY='mars_rtv_hist';
+function getHistory(){try{return JSON.parse(localStorage.getItem(HIST_KEY)||'[]');}catch(e){return[];}}
+function saveHistory(h){localStorage.setItem(HIST_KEY,JSON.stringify(h));}
+function addToHistory(e){
+  var h=getHistory();
+  h.unshift(Object.assign({},e,{id:Date.now(),savedAt:new Date().toISOString()}));
+  if(h.length>200)h.pop();
+  saveHistory(h);
+  updateHistoryCount();
+}
+function updateHistoryCount(){
+  var h=getHistory();
+  var btn=document.getElementById('history-btn');
+  var cnt=document.getElementById('history-count');
+  if(btn){btn.style.display=h.length>0?'flex':'none';}
+  if(cnt)cnt.textContent=h.length;
+}
+function toggleHistoryPanel(){
+  var p=document.getElementById('history-panel');
+  var vis=p.style.display==='flex';
+  p.style.display=vis?'none':'flex';
+  if(!vis)renderHistoryList();
+}
+function closeHistoryPanel(){document.getElementById('history-panel').style.display='none';}
+function clearHistoryFilters(){
+  document.getElementById('hist-from').value='';
+  document.getElementById('hist-to').value='';
+  renderHistoryList();
+}
+function clearAllHistory(){
+  if(!confirm('حذف كل السجلات؟'))return;
+  localStorage.removeItem(HIST_KEY);
+  updateHistoryCount();
+  renderHistoryList();
+}
+function deleteHistoryItem(id){
+  saveHistory(getHistory().filter(function(e){return e.id!=id;}));
+  updateHistoryCount();renderHistoryList();
+}
+function redownloadHistory(id){
+  var e=getHistory().find(function(h){return h.id==id;});
+  if(!e||!e.xlsxUrl){alert('الملف غير متاح — أعد التحويل');return;}
+  var a=document.createElement('a');a.href=e.xlsxUrl;a.download=e.filename||'RTV.xlsx';a.click();
+}
+function renderHistoryList(){
+  var list=document.getElementById('history-list');
+  var empty=document.getElementById('history-empty');
+  var h=getHistory();
+  var from=document.getElementById('hist-from').value;
+  var to=document.getElementById('hist-to').value;
+  if(from)h=h.filter(function(e){return e.date>=from;});
+  if(to)h=h.filter(function(e){return e.date<=to;});
+  list.innerHTML='';
+  if(!h.length){empty.style.display='block';return;}
+  empty.style.display='none';
+  h.forEach(function(e){
+    var d=document.createElement('div');
+    d.style.cssText='background:#0f172a;border:1px solid #1e3a5f;border-radius:10px;padding:12px 14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-bottom:4px';
+    var badge=function(t){return '<span style="background:#1e3a5f;color:#93c5fd;border-radius:5px;padding:2px 8px;font-size:11px">'+t+'</span>';};
+    d.innerHTML='<div style="flex:1;min-width:120px">'
+      +'<div style="color:#f1f5f9;font-size:13px;font-weight:600;margin-bottom:5px">&#128202; '+(e.filename||'RTV.xlsx')+'</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
+      +badge('&#128197; '+(e.date||'—'))
+      +badge('&#127978; '+(e.stores||'—').slice(0,30))
+      +badge('&#128230; '+(e.items||0)+' صنف')
+      +badge('&#128176; '+(e.exvat||'0.00'))
+      +'</div></div>'
+      +'<div style="display:flex;gap:6px">'
+      +(e.xlsxUrl?'<button onclick="redownloadHistory('+e.id+')" style="background:linear-gradient(135deg,#065f46,#059669);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;font-weight:600">&#11015; تنزيل</button>':'<span style="color:#475569;font-size:11px">غير متاح</span>')
+      +'<button onclick="deleteHistoryItem('+e.id+')" style="background:#7f1d1d;color:#fca5a5;border:none;border-radius:6px;padding:5px 9px;font-size:12px;cursor:pointer">&#128465;</button>'
+      +'</div>';
+    list.appendChild(d);
+  });
+}
+document.addEventListener('DOMContentLoaded',updateHistoryCount);
+</script>
+
 </body>
 </html>
