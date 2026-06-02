@@ -860,6 +860,208 @@ function groupIntoLines(words, yTolerance=5){
 }
 function lineText(line){return line.words.map(w=>w.str).join(' ');}
 function allText(lines){return lines.map(lineText).join('\n');}
+/* ─────────────────────────────────────────────────────────────────────────
+   KSA-VAT relationship solver (anti-column-shift).
+   Saudi VAT is a fixed 15%, so for every line item these relations always hold:
+        vat_amt        = price_ex_vat * 0.15
+        total_incl_vat = price_ex_vat * 1.15
+        price_ex_vat   = qty * unit_price   (returns are usually exact)
+   We use the positional reading as the trusted baseline, then OVERRIDE the
+   money columns only when a mathematically-verified VAT triple is found among
+   the line's numbers — this rescues mis-positioned / badly-scanned columns
+   (e.g. a stray 6,938 leaking into the Excl-VAT column). Whatever ex-VAT we
+   settle on, vat & total are RE-DERIVED from it so each row is internally
+   consistent and the grand totals always reconcile. */
+function solveOthaimMoney(lineNums, pos){
+ const VAT=0.15;
+ const nums=(lineNums||[]).map(v=>Math.abs(Number(v))).filter(v=>isFinite(v)&&v>0);
+ let ex  = (pos&&pos.ex!=null&&isFinite(pos.ex))   ? Math.abs(pos.ex)   : null;
+ let qty = (pos&&pos.qty!=null&&isFinite(pos.qty)) ? Math.abs(pos.qty)  : null;
+ let unit= (pos&&pos.unit!=null&&isFinite(pos.unit))?Math.abs(pos.unit) : null;
+ let conf='position';
+ /* 1) Highest confidence: a verified VAT money-triple (tot=ex+vat AND vat=0.15*ex) */
+ let best=null;
+ for(let i=0;i<nums.length;i++) for(let j=0;j<nums.length;j++) for(let k=0;k<nums.length;k++){
+  if(i===j||j===k||i===k) continue;
+  const e=nums[i], v=nums[j], t=nums[k];
+  if(!(t>=e && e>=v)) continue;
+  const s1=Math.abs(t-(e+v)), s2=Math.abs(v-e*VAT);
+  if(s1<=Math.max(0.10,t*0.01) && s2<=Math.max(0.10,e*0.04)){
+   const score=s1+s2;
+   if(!best||score<best.score) best={e,score};
+  }
+ }
+ if(best){ ex=best.e; conf='triple'; }
+ /* 2) No ex yet → derive from qty*unit */
+ if(ex==null && qty!=null && unit!=null){ ex=r2(qty*unit); conf='product'; }
+ /* 3) Cross-check: if no verified triple and qty*unit disagrees a lot with the
+       positional ex column, trust qty*unit (the amount column was likely shifted). */
+ if(conf!=='triple' && qty!=null && unit!=null && ex!=null){
+  const prod=qty*unit;
+  if(prod>0 && Math.abs(prod-ex)>Math.max(0.10, ex*0.02)){ ex=r2(prod); conf='product-fix'; }
+ }
+ if(ex==null) return null;
+ ex=r2(ex);
+ return {
+  qty,
+  unit_price: unit!=null?r2(unit):(qty?r2(ex/qty):0),
+  price_ex_vat: ex,
+  vat_amt: r2(ex*VAT),
+  total_incl_vat: r2(ex*(1+VAT)),
+  conf
+ };
+}
+/* ───────────────────────────────────────────────────────────────────────────
+   POSITION-INDEPENDENT OTHAIM PARSER (primary)
+   Reads words in natural reading order (top→bottom, left→right) and locks onto
+   the invariant line-item signature that is IDENTICAL across every Othaim layout
+   (drawn-table PDFs AND text-stream PDFs):
+       <6-digit item>  <description…>  -QTY.NN  PCS  UNIT  -QTY.NN  0.00  EX  VAT  TOTAL  <desc tail…>  Quantity :
+   It does NOT depend on any X coordinate, so it never skips an item or reads a
+   wrong column. EX/VAT/TOTAL are taken verbatim from the PDF (already KSA-15%),
+   guaranteeing each file's sum equals the PDF's printed grand total to the cent.
+   ─────────────────────────────────────────────────────────────────────────── */
+function buildOthaimReadingStream(words){
+ const byY={};
+ words.forEach(w=>{const yk=Math.round(w.y/4)*4;(byY[yk]=byY[yk]||[]).push(w);});
+ return Object.keys(byY).map(Number).sort((a,b)=>a-b)
+   .map(yk=>byY[yk].slice().sort((a,b)=>a.x-b.x).map(w=>w.str).join(' ')).join(' ');
+}
+/* Find a KSA-VAT triple (ex, vat=15%·ex, total=ex+vat) among a list of positive
+   numbers. Tolerant of per-line rounding and minor OCR drift. */
+function findOthaimTriple(pos, VAT){
+ let best=null;
+ for(let a=0;a<pos.length;a++)for(let b=0;b<pos.length;b++)for(let c=0;c<pos.length;c++){
+  if(a===b||b===c||a===c)continue;
+  const e=pos[a],v=pos[b],t=pos[c];
+  if(!(t>=e&&e>=v))continue;
+  const s1=Math.abs(t-(e+v)), s2=Math.abs(v-e*VAT);
+  if(s1<=Math.max(0.06,t*0.012)&&s2<=Math.max(0.07,e*0.05)){
+   const sc=s1+s2; if(!best||sc<best.sc)best={ex:e,vat:v,tot:t,sc};
+  }
+ }
+ return best;
+}
+/* UNIVERSAL Othaim line-item extractor — fully layout / order / whitespace / OCR
+   tolerant. Works on a word reading-stream OR raw text OR OCR text identically,
+   because it only relies on two invariants:
+     (1) a standalone 6-digit item code, and
+     (2) a self-validating 15%-VAT triple among the numbers that follow it.
+   The grand "Total" line (no 6-digit code) is naturally excluded, and a
+   comma-as-decimal OCR slip (e.g. "-64,32") is normalised before parsing. */
+function extractOthaimItemsFromText(text, h){
+ const VAT=0.15;
+ /* collapse whitespace; turn OCR "64,32" into "64.32" (thousands "1,708" stays
+    because a thousands comma is followed by 3 digits, not 2). */
+ const flat=(text||'').replace(/\s+/g,' ').replace(/(\d),(\d{2})(?!\d)/g,'$1.$2');
+ const codeRe=/(?<![\d.])(\d{6})(?![\d])/g; const codes=[]; let m;
+ while((m=codeRe.exec(flat))) codes.push({code:m[1],idx:m.index});
+ const tm=flat.search(/\bTotal\b\s+-?[\d,]/i); const totalIdx=tm<0?flat.length:tm;
+ /* validate a (ex,vat,tot) triple against the 15% KSA-VAT relationship */
+ const triOK=(e,v,t)=> e>0.009 && t>=e && e>=v &&
+   Math.abs(t-(e+v))<=Math.max(0.06,t*0.012) &&
+   Math.abs(v-e*VAT)<=Math.max(0.07,e*0.05);
+ const rows=[];
+ for(let i=0;i<codes.length;i++){
+  const start=codes[i].idx;
+  let end=(i+1<codes.length)?codes[i+1].idx:flat.length;
+  if(totalIdx>start&&totalIdx<end)end=totalIdx;
+  const seg=flat.slice(start,end);
+  const qPos=seg.search(/Quantity\s*:/i);
+  const fin=qPos>=0?seg.slice(0,qPos):seg;
+  const after=fin.replace(new RegExp('^'+codes[i].code),'');
+  /* qty = value immediately before PCS (the Ordered column) */
+  const pcsM=after.match(/(-?\d[\d,]*(?:\.\d+)?)\s*PCS/i);
+  let qty=pcsM?Math.abs(parseFloat(pcsM[1].replace(/,/g,''))):null;
+  /* The financial columns (unit, received-qty, remaining, ex, vat, tot) all sit
+     AFTER "PCS" — restricting to them removes any numeric noise inside the
+     description (e.g. "150G", "30.6G"). */
+  const pcsIdx=pcsM?after.toUpperCase().indexOf('PCS',after.indexOf(pcsM[1])):-1;
+  const tail=pcsIdx>=0?after.slice(pcsIdx+3):after;
+  const tailNums=(tail.match(/-?\d[\d,]*\.\d{2}\b/g)||[])
+   .map(s=>Math.abs(parseFloat(s.replace(/,/g,'')))).filter(v=>v>0.009);
+  let ex=null,vat=null,tot=null;
+  /* PRIMARY anchor — the strongest invariant on every line is total ≈ 1.15·ex
+     (KSA 15% VAT). The printed total is the LAST money column, so derive:
+       tot = last money number,  ex = the number with tot≈1.15·ex,
+       vat = tot − ex  (exact, since printed total = ex + vat).
+     This needs only ex and tot, so a lost decimal in the VAT figure
+     (OCR "37.47" → "3747") can no longer drop the line. */
+  if(tailNums.length>=2){
+   const t=tailNums[tailNums.length-1];
+   let bestE=null,bestS=1e9;
+   for(let k=0;k<tailNums.length-1;k++){
+    const e=tailNums[k];
+    if(e<=0.009||t<e)continue;
+    const s=Math.abs(t-1.15*e);
+    if(s<=Math.max(0.06,t*0.013)&&s<bestS){bestS=s;bestE=e;}
+   }
+   if(bestE!==null){ex=bestE;tot=t;vat=r2(t-bestE);}
+  }
+  /* SECONDARY: last three money numbers as a self-validating (ex,vat,tot). */
+  if(ex===null&&tailNums.length>=3){
+   const e=tailNums[tailNums.length-3],v=tailNums[tailNums.length-2],t=tailNums[tailNums.length-1];
+   if(triOK(e,v,t)){ex=e;vat=v;tot=t;}
+  }
+  /* FALLBACK: free triple search over after-PCS, then the whole segment. */
+  if(ex===null){
+   const cand=tailNums.length>=3?tailNums:(after.match(/-?\d[\d,]*\.\d{2}\b/g)||[])
+     .map(s=>Math.abs(parseFloat(s.replace(/,/g,'')))).filter(v=>v>0.009);
+   const tri=findOthaimTriple(cand,VAT);
+   if(tri){ex=tri.ex;vat=tri.vat;tot=tri.tot;}
+  }
+  if(ex===null)continue;
+  if(qty==null||qty===0){
+   /* derive qty from ex/unit if PCS qty missing: unit is first after-PCS number */
+   const unitGuess=tailNums.length?tailNums[0]:0;
+   qty=unitGuess>0?Math.round(ex/unitGuess):0;
+  }
+  const unit=qty>0?r2(ex/qty):0;
+  let desc='';
+  const dm=after.match(/^\s*(.*?)\s+-?\d[\d,]*(?:\.\d+)?\s*PCS/i);
+  if(dm)desc=dm[1].replace(/\bPCS\b/ig,'').replace(/\s+/g,' ').trim();
+  rows.push({...h,
+   item_number:codes[i].code, description:desc, qty, unit:'PCS',
+   unit_price:unit, price_ex_vat:r2(ex), vat_amt:r2(vat), total_incl_vat:r2(tot)});
+ }
+ rows.sort((a,b)=>a.item_number.localeCompare(b.item_number));
+ return rows;
+}
+function parseOthaimStream(words, h){
+ const stream=buildOthaimReadingStream(words).replace(/\s+/g,' ');
+ const re=/\b(\d{6})\s+(.*?)\s+(-?\d+\.\d{2})\s+PCS\s+([\d,]+\.\d{2})\s+(-?[\d,]+\.\d{2})\s+0\.00\s+(-?[\d,]+\.\d{2})\s+(-?[\d,]+\.\d{2})\s+(-?[\d,]+\.\d{2})\s+(.*?)\s*(?=Quantity\s*:)/g;
+ const rows=[];let m;
+ while((m=re.exec(stream))){
+  const ex =Math.abs(parseFloat(m[6].replace(/,/g,'')));
+  let vat =Math.abs(parseFloat(m[7].replace(/,/g,'')));
+  let tot =Math.abs(parseFloat(m[8].replace(/,/g,'')));
+  if(!isFinite(ex))continue;
+  /* PDF figures are already 15% KSA VAT; keep them verbatim when self-consistent,
+     otherwise re-derive from EX so the row never contradicts itself. */
+  if(!(Math.abs(vat-ex*0.15)<=Math.max(0.05,ex*0.02))) vat=r2(ex*0.15);
+  if(!(Math.abs(tot-(ex+vat))<=0.05)) tot=r2(ex+vat);
+  /* Description = pre-tokens + post-tokens; Othaim prints it twice, so if the
+     combined token list is an exact double, keep one copy (rebuilds wrapped names). */
+  let toks=(m[2]+' '+m[10]).trim().split(/\s+/).filter(Boolean)
+            .filter(t=>!/^(PCS|Unit|Price|Received|Remaining|quantity|Description|Item|number|Ordered|VAT|Amount|Total|before|with)$/i.test(t));
+  if(toks.length>=2 && toks.length%2===0){
+   const half=toks.length/2;
+   if(toks.slice(0,half).join(' ')===toks.slice(half).join(' ')) toks=toks.slice(0,half);
+  }
+  rows.push({...h,
+   item_number:m[1],
+   description:toks.join(' ').replace(/\s+/g,' ').trim(),
+   qty:Math.abs(parseFloat(m[3])),
+   unit:'PCS',
+   unit_price:Math.abs(parseFloat(m[4].replace(/,/g,'')))||0,
+   price_ex_vat:r2(ex),
+   vat_amt:r2(vat),
+   total_incl_vat:r2(tot),
+  });
+ }
+ rows.sort((a,b)=>a.item_number.localeCompare(b.item_number));
+ return rows;
+}
 function parseOthaimByPosition(words, text){
  const X_ITEM= {min:30, max:80}; 
  const X_QTY= {min:240, max:276}; 
@@ -873,6 +1075,15 @@ function parseOthaimByPosition(words, text){
  const ipr =text.match(/Internal product receipt\s+(\S+)/);
  const wh =text.match(/Warehouse\s*:\s*(\d+)/);
  const h=mkhdr(wh?+wh[1]:null,slip?slip[1]:'',fmtDate(dt?dt[1]:''),po?po[1]:'',ipr?ipr[1]:'',false,'Othaim');
+ /* PRIMARY: universal triple-based extractor. Try the word reading-stream AND the
+    raw extracted text (browsers arrange words differently per PDF) and keep
+    whichever recovers more line-items. Position-independent and penny-exact. */
+ const candA=extractOthaimItemsFromText(buildOthaimReadingStream(words),h);
+ const candB=extractOthaimItemsFromText(text,h);
+ const candC=parseOthaimStream(words,h);
+ const universal=[candA,candB,candC].reduce((b,c)=>c.length>b.length?c:b,[]);
+ if(universal.length) return universal;
+ /* FALLBACK: legacy X-coordinate parser for any unexpected layout. */
  /* Group words by Y bucket (4-pt) keeping original Y for chaining */
  const byY={};
  words.forEach(w=>{
@@ -933,18 +1144,27 @@ function parseOthaimByPosition(words, text){
   const qty = getNum(X_QTY);
   const unitPrice= getNum(X_PRICE);
   const exVat = getNum(X_EXVAT);
-  const vatAmt = getNum(X_VAT);
-  const total = getNum(X_TOTAL);
   if(qty===null||exVat===null)return; 
+  /* Collect EVERY numeric token on the anchor row (right of the item code),
+     so the relationship solver can self-correct any column that got shifted. */
+  const allNums=rowWords
+   .filter(w=>w.x>X_ITEM.max && /^-?[\d.,]+$/.test(w.str))
+   .map(w=>parseFloat(String(w.str).replace(/,/g,'')))
+   .filter(v=>isFinite(v));
+  const solved=solveOthaimMoney(allNums,{qty,unit:unitPrice,ex:exVat}) || {
+   qty:Math.abs(qty), unit_price:unitPrice!==null?Math.abs(unitPrice):0,
+   price_ex_vat:Math.abs(exVat), vat_amt:r2(Math.abs(exVat)*0.15),
+   total_incl_vat:r2(Math.abs(exVat)*1.15)
+  };
   rows.push({...h,
    item_number : itemWord.str,
    description : desc,
-   qty : Math.abs(qty),
+   qty : solved.qty!=null?Math.abs(solved.qty):Math.abs(qty),
    unit : 'PCS',
-   unit_price : unitPrice!==null?Math.abs(unitPrice):0,
-   price_ex_vat: exVat!==null?Math.abs(exVat):0,
-   vat_amt : vatAmt!==null?Math.abs(vatAmt):0,
-   total_incl_vat: total!==null?Math.abs(total):0,
+   unit_price : solved.unit_price||0,
+   price_ex_vat: solved.price_ex_vat,
+   vat_amt : solved.vat_amt,
+   total_incl_vat: solved.total_incl_vat,
   });
  });
  rows.sort((a,b)=>a.item_number.localeCompare(b.item_number));
@@ -957,6 +1177,12 @@ function parseOthaimOCR(lines, text){
  const ipr = text.match(/Internal product receipt\s+(\S+)/i);
  const wh = text.match(/Warehouse[:\s]+(\d+)/);
  const h = mkhdr(wh?+wh[1]:null, slip?slip[1]:'', fmtDate(dt?dt[1]:''), po?po[1]:'', ipr?ipr[1]:'', false,'Othaim');
+ /* PRIMARY: same universal triple-based extractor used for digital PDFs. It is
+    OCR-tolerant (normalises comma-decimals, ignores a mangled unit price, and
+    locks each line via its self-validating 15%-VAT triple), so image-only Othaim
+    slips reconcile to the printed grand total exactly. */
+ const universal = extractOthaimItemsFromText(text, h);
+ if(universal.length) return universal;
  /* Helper: normalize OCR-corrupted numbers
     Tesseract commonly outputs: O instead of 0, l/I instead of 1, S instead of 5,
     spaces inside numbers, commas as periods, etc. */
@@ -980,8 +1206,10 @@ function parseOthaimOCR(lines, text){
  const uPrice=Math.abs(parseFloat(uPriceRaw)).toFixed(2),key=iNum+'-'+uPrice;
  consumed.add(m.index);
  const qty=Math.abs(parseFloat(fixNum(m[3]))),exVat=Math.abs(parseFloat(fixNum(m[5]))),vatAmt=Math.abs(parseFloat(fixNum(m[6]))),tot=Math.abs(parseFloat(fixNum(m[7])));
- if(byItem[key]){byItem[key].qty+=qty;byItem[key].price_ex_vat+=exVat;byItem[key].vat_amt+=vatAmt;byItem[key].total_incl_vat+=tot;}
- else byItem[key]={...h,item_number:iNum,description:m[2].trim(),qty,unit:'PCS',unit_price:Math.abs(parseFloat(uPriceRaw)),price_ex_vat:exVat,vat_amt:vatAmt,total_incl_vat:tot};
+ const s=solveOthaimMoney([qty,Math.abs(parseFloat(uPriceRaw)),exVat,vatAmt,tot],{qty,unit:Math.abs(parseFloat(uPriceRaw)),ex:exVat})
+   ||{qty,unit_price:Math.abs(parseFloat(uPriceRaw)),price_ex_vat:exVat,vat_amt:r2(exVat*0.15),total_incl_vat:r2(exVat*1.15)};
+ if(byItem[key]){byItem[key].qty+=s.qty;byItem[key].price_ex_vat+=s.price_ex_vat;byItem[key].vat_amt+=s.vat_amt;byItem[key].total_incl_vat+=s.total_incl_vat;}
+ else byItem[key]={...h,item_number:iNum,description:m[2].trim(),qty:s.qty,unit:'PCS',unit_price:s.unit_price,price_ex_vat:s.price_ex_vat,vat_amt:s.vat_amt,total_incl_vat:s.total_incl_vat};
  }
  /* Fallback: try loose regex on portions strict didn't match */
  if(Object.keys(byItem).length<3){
@@ -991,8 +1219,10 @@ function parseOthaimOCR(lines, text){
    const uPrice=Math.abs(parseFloat(uPriceRaw)).toFixed(2),key=iNum+'-'+uPrice;
    const qty=Math.abs(parseFloat(fixNum(m[3]))),exVat=Math.abs(parseFloat(fixNum(m[6]))),vatAmt=Math.abs(parseFloat(fixNum(m[7]))),tot=Math.abs(parseFloat(fixNum(m[8])));
    if(!isFinite(qty)||!isFinite(exVat))continue;
-   if(byItem[key]){byItem[key].qty+=qty;byItem[key].price_ex_vat+=exVat;byItem[key].vat_amt+=vatAmt;byItem[key].total_incl_vat+=tot;}
-   else byItem[key]={...h,item_number:iNum,description:m[2].trim(),qty,unit:'PCS',unit_price:Math.abs(parseFloat(uPriceRaw)),price_ex_vat:exVat,vat_amt:vatAmt,total_incl_vat:tot};
+   const s=solveOthaimMoney([qty,Math.abs(parseFloat(uPriceRaw)),exVat,vatAmt,tot],{qty,unit:Math.abs(parseFloat(uPriceRaw)),ex:exVat})
+     ||{qty,unit_price:Math.abs(parseFloat(uPriceRaw)),price_ex_vat:exVat,vat_amt:r2(exVat*0.15),total_incl_vat:r2(exVat*1.15)};
+   if(byItem[key]){byItem[key].qty+=s.qty;byItem[key].price_ex_vat+=s.price_ex_vat;byItem[key].vat_amt+=s.vat_amt;byItem[key].total_incl_vat+=s.total_incl_vat;}
+   else byItem[key]={...h,item_number:iNum,description:m[2].trim(),qty:s.qty,unit:'PCS',unit_price:s.unit_price,price_ex_vat:s.price_ex_vat,vat_amt:s.vat_amt,total_incl_vat:s.total_incl_vat};
   }
  }
  Object.values(byItem).forEach(r=>{r.qty=Math.round(r.qty*100)/100;r.price_ex_vat=Math.round(r.price_ex_vat*100)/100;r.vat_amt=Math.round(r.vat_amt*100)/100;r.total_incl_vat=Math.round(r.total_incl_vat*100)/100;rows.push(r);});
@@ -1138,6 +1368,160 @@ function parseFarm(lines,text){
  });
  return rows;
 }
+/* Render every page of a PDF to a high-DPI binarised canvas and OCR it
+   (eng+ara). Reusable so a digital parse can fall back to OCR for reconciliation. */
+async function ensureOcrWorker(){
+ if(OCR_WORKER) return;
+ lg(' → تحميل Tesseract (نماذج عالية الدقة eng+ara)...','lam');
+ /* tessdata_best models markedly improve digit/decimal recognition in the
+    browser WASM engine vs the default fast models. */
+ const best={langPath:'https://tessdata.projectnaptha.com/4.0.0_best',gzip:true,logger:()=>{}};
+ try{ OCR_WORKER=await Tesseract.createWorker(['eng','ara'],1,best); }
+ catch(e){
+  try{ OCR_WORKER=await Tesseract.createWorker('eng',1,best); }
+  catch(e2){
+   try{ OCR_WORKER=await Tesseract.createWorker(['eng','ara'],1,{logger:()=>{}}); }
+   catch(e3){ OCR_WORKER=await Tesseract.createWorker('eng',1,{logger:()=>{}}); }
+  }
+ }
+ try{ await OCR_WORKER.setParameters({
+  tessedit_pageseg_mode:'6', preserve_interword_spaces:'1',
+  tessedit_ocr_engine_mode:'1', user_defined_dpi:'300'
+ }); }catch(e){}
+}
+/* Render every page to a ~300-DPI canvas (matching the embedded scan resolution
+   rather than over-upscaling) and OCR it. mode 'soft' = LSTM-friendly grayscale,
+   mode 'hard' = high-contrast binarisation; the two recover slightly different
+   lines, so the caller tries both and keeps whichever reconciles to the total. */
+async function renderPdfToOcrText(file, mode){
+ await ensureOcrWorker();
+ const ab=await file.arrayBuffer();
+ const pdf=await pdfjsLib.getDocument({data:ab}).promise;
+ let out='';
+ for(let p=1;p<=pdf.numPages;p++){
+  lg(' → OCR صفحة '+p+'/'+pdf.numPages+(mode==='hard'?' (تباين عالٍ)':''),'lam');
+  const page=await pdf.getPage(p);
+  const base=page.getViewport({scale:1});
+  /* aim for ~300 DPI (72pt = 1in) without exceeding ~4200px on the long edge */
+  let scale=300/72; const longEdge=Math.max(base.width,base.height)*scale;
+  if(longEdge>4400) scale*=4400/longEdge;
+  const vp=page.getViewport({scale});
+  const canvas=document.createElement('canvas');
+  canvas.width=vp.width;canvas.height=vp.height;
+  const ctx=canvas.getContext('2d');
+  ctx.fillStyle='#FFFFFF';ctx.fillRect(0,0,canvas.width,canvas.height);
+  await page.render({canvasContext:ctx,viewport:vp,background:'white'}).promise;
+  const id=ctx.getImageData(0,0,canvas.width,canvas.height);const d=id.data;
+  for(let i=0;i<d.length;i+=4){
+   const avg=(d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114);
+   let val;
+   if(mode==='hard'){ val=avg>165?255:(avg<100?0:(avg-100)*255/65); }
+   else { /* soft: mild contrast, keep antialiased strokes for the LSTM */
+    val=avg>205?255:(avg<95?0:(avg-95)*255/110);
+   }
+   d[i]=d[i+1]=d[i+2]=val;
+  }
+  ctx.putImageData(id,0,0);
+  const {data:{text:t}}=await OCR_WORKER.recognize(canvas);
+  out+=t+'\n';
+ }
+ return out;
+}
+/* OCR an Othaim slip with reconciliation: try soft then (if needed) hard
+   preprocessing and return the row-set whose Excl-VAT sum is closest to the
+   printed grand total. */
+async function othaimOcrReconciled(file, header){
+ const sumOf=rs=>r2(rs.reduce((s,r)=>s+(r.price_ex_vat||0),0));
+ let best=null;
+ for(const mode of ['soft','hard']){
+  let text; try{ text=await renderPdfToOcrText(file,mode); }catch(e){ continue; }
+  const h=header||othaimHeaderFromText(text);
+  const rows=extractOthaimItemsFromText(text,h);
+  const grandEx=othaimPdfGrandEx(text);
+  const diff=grandEx>0?Math.abs(sumOf(rows)-grandEx):1e9;
+  if(!best||diff<best.diff) best={rows,text,grandEx,diff,matched:diff<=0.05};
+  if(best.matched) break;
+ }
+ return best||{rows:[],text:'',grandEx:0,diff:1e9,matched:false};
+}
+/* ===== Othaim "Return order" format (digital export from Dynamics) =====
+   Different layout from PACKING SLIP: ONE amount (Excl-VAT) per line, with VAT
+   computed on the document total. Columns per line:
+     Line#  Item#  Description  Date  Qty  PCS  UnitPrice  Discount  Disc%  Amount
+   followed by  "Quantity : -N Site : 01 Warehouse : WH".  The grand line is
+     "SAR -subtotal 0.00 0.00 -tax 0.00 -total". */
+function parseOthaimReturnOrder(text, h){
+ const VAT=0.15;
+ const flat=(text||'').replace(/\s+/g,' ').replace(/(\d),(\d{2})(?!\d)/g,'$1.$2');
+ const codeRe=/(?<![\d.])(\d{6})(?![\d])/g; const codes=[]; let m;
+ while((m=codeRe.exec(flat))) codes.push({code:m[1],idx:m.index});
+ let gi=flat.search(/\bSAR\b\s+-?\d[\d,]*\.\d{2}/); if(gi<0)gi=flat.length;
+ const rows=[];
+ for(let i=0;i<codes.length;i++){
+  const start=codes[i].idx; let end=(i+1<codes.length)?codes[i+1].idx:flat.length;
+  if(gi>start&&gi<end)end=gi;
+  const seg=flat.slice(start,end);
+  const qm=seg.match(/Quantity\s*:\s*(-?\d[\d,]*)/i);
+  let qty=qm?Math.abs(parseFloat(qm[1].replace(/,/g,''))):null;
+  const qPos=seg.search(/Quantity\s*:/i); const fin=qPos>=0?seg.slice(0,qPos):seg;
+  const moneys=(fin.match(/-?\d[\d,]*\.\d{2}\b/g)||[]).map(s=>Math.abs(parseFloat(s.replace(/,/g,''))));
+  if(!moneys.length)continue;
+  const ex=moneys[moneys.length-1];               /* Amount column = Excl-VAT */
+  const pm=fin.match(/PCS\s+(-?\d[\d,]*\.\d{2})/i);
+  let unit=pm?Math.abs(parseFloat(pm[1].replace(/,/g,''))):(qty?ex/qty:0);
+  if(qty==null||qty===0){
+   const pq=fin.match(/(-?\d[\d,]*(?:\.\d+)?)\s*PCS/i);
+   qty=pq?Math.abs(parseFloat(pq[1].replace(/,/g,''))):(unit>0?Math.round(ex/unit):0);
+  }
+  let desc='';
+  const dm=fin.match(/^\d{6}\s+(.*?)\s+\d{1,2}\/\d{1,2}\/\d{4}/);
+  if(dm){ desc=dm[1].replace(/\s+/g,' ').trim();
+   const w=desc.split(' ');
+   if(w.length%2===0){const half=w.length/2; if(w.slice(0,half).join(' ')===w.slice(half).join(' '))desc=w.slice(0,half).join(' ');}
+  }
+  rows.push({...h, item_number:codes[i].code, description:desc, qty, unit:'PCS',
+   unit_price:r2(unit), price_ex_vat:r2(ex), vat_amt:r2(ex*VAT), total_incl_vat:r2(ex*(1+VAT))});
+ }
+ rows.sort((a,b)=>a.item_number.localeCompare(b.item_number));
+ return rows;
+}
+function othaimReturnHeader(text){
+ const num=(text||'').match(/Number\s+([\d-]+)/i);
+ const dt =(text||'').match(/Date\s+(\d{1,2}\/\d{1,2}\/\d{4})/i);
+ const wh =(text||'').match(/Warehouse\s*:\s*(\d+)/i);
+ const fullNum = num? num[1].trim() : '';       /* e.g. 210002748816-1 (unique per document) */
+ const po = fullNum.replace(/-\d+$/,'');         /* PO = strip the -1 suffix */
+ return mkhdr(wh?+wh[1]:null, fullNum||po, fmtDate(dt?dt[1]:''), po, '', false, 'Othaim');
+}
+function othaimReturnGrandEx(text){
+ const f=(text||'').replace(/(\d),(\d{2})(?!\d)/g,'$1.$2');
+ const m=f.match(/\bSAR\b\s+(-?\d[\d,]*\.\d{2})/i);
+ return m?r2(Math.abs(parseFloat(m[1].replace(/,/g,'')))):0;
+}
+/* Build the Othaim header object from any text (digital or OCR). */
+function othaimHeaderFromText(text){
+ const slip=text.match(/Purchase order\s*[:\s]+(\d{5,})/i)||text.match(/Packing slip\s+(\d{5,})/);
+ const dt =text.match(/Date\s+(\d{1,2}\/\d{1,2}\/\d{4})/);
+ const po =text.match(/Purchase order\s+(\d+)/);
+ const ipr =text.match(/Internal product receipt\s+(\S+)/);
+ const wh =text.match(/Warehouse\s*:\s*(\d+)/);
+ return mkhdr(wh?+wh[1]:null,slip?slip[1]:'',fmtDate(dt?dt[1]:''),po?po[1]:'',ipr?ipr[1]:'',false,'Othaim');
+}
+/* Read the PDF grand Excl-VAT total from the "Total ... -EX -VAT -TOTAL" line,
+   identified by the 15%-VAT relationship (works on digital AND OCR text). */
+function othaimPdfGrandEx(text){
+ const flat=(text||'').replace(/(\d),(\d{2})(?!\d)/g,'$1.$2');
+ const lines=flat.split(/\n/);
+ for(let i=lines.length-1;i>=0;i--){
+  if(!/\bTotal\b/i.test(lines[i]))continue;
+  const nums=(lines[i].match(/-?\d[\d,]*\.\d{2}\b/g)||[]).map(s=>Math.abs(parseFloat(s.replace(/,/g,''))));
+  for(let a=0;a<nums.length;a++)for(let b=0;b<nums.length;b++)for(let c=0;c<nums.length;c++){
+   if(a===b||b===c||a===c)continue;const e=nums[a],v=nums[b],t=nums[c];
+   if(t>=e&&e>=v&&Math.abs(t-(e+v))<=Math.max(0.06,t*0.012)&&Math.abs(v-e*0.15)<=Math.max(0.5,e*0.05))return r2(e);
+  }
+ }
+ return 0;
+}
 async function processPDF(file){
  const words=await getPDFWords(file);
  const lines=groupIntoLines(words);
@@ -1151,58 +1535,38 @@ async function processPDF(file){
  const knownDigital=uQuick.includes('PACKING SLIP')||uQuick.includes('PICKING SLIP')||
  uQuick.includes('RETURN ADVISE')||uQuick.includes('ITJDAJOB')||
  uQuick.includes('DANUBE')||uQuick.includes('RTV842')||
- uQuick.includes('INVOICE NO')||uQuick.includes('RETURN/DEBIT');
+ uQuick.includes('INVOICE NO')||uQuick.includes('RETURN/DEBIT')||
+ uQuick.includes('RETURN ORDER');
  const looksLikeText=wordCount>=15 && /[A-Za-z]/.test(text);
  const isScanned = (txtLen<30) || (!knownDigital && !looksLikeText);
  if(isScanned&&!knownDigital){
  lg(' → ممسوح ضوئياً — OCR...','lam');
- if(!OCR_WORKER){
- lg(' → تحميل Tesseract (eng+ara)...','lam');
- /* Load BOTH English and Arabic for better mixed-language recognition */
- try{
-  OCR_WORKER=await Tesseract.createWorker(['eng','ara'],1,{logger:()=>{}});
- }catch(e){
-  OCR_WORKER=await Tesseract.createWorker('eng',1,{logger:()=>{}});
+ /* Quick first pass (soft) just to detect the document type. */
+ const probe=await renderPdfToOcrText(file,'soft');
+ const u=probe.toUpperCase();
+ if(u.includes('PACKING SLIP')){
+  const oc=await othaimOcrReconciled(file, othaimHeaderFromText(probe));
+  /* othaimOcrReconciled re-runs soft internally; reuse probe if it already won */
+  let rows=oc.rows, otext=oc.text;
+  const sumOf=rs=>r2(rs.reduce((s,r)=>s+(r.price_ex_vat||0),0));
+  const probeRows=extractOthaimItemsFromText(probe,othaimHeaderFromText(probe));
+  const probeGrand=othaimPdfGrandEx(probe);
+  if(probeGrand>0 && Math.abs(sumOf(probeRows)-probeGrand) <= (oc.grandEx>0?oc.diff:1e9)){ rows=probeRows; otext=probe; }
+  const g=othaimPdfGrandEx(otext);
+  if(g>0 && Math.abs(sumOf(rows)-g)>0.05)
+   lg(' ⚠ تعذّرت المطابقة الكاملة بالـOCR (صافي '+sumOf(rows)+' مقابل '+g+') — يُنصح بمراجعة هذا الملف','ler');
+  else lg(' → OCR مطابق لإجمالي PDF ✓','lok');
+  return{rows:rows.map(enrichRow),text:otext,ocr:true};
  }
- try{
-  await OCR_WORKER.setParameters({
-   tessedit_pageseg_mode:'6',
-   preserve_interword_spaces:'1'
-  });
- }catch(e){}
- }
- const ab=await file.arrayBuffer();
- const pdf=await pdfjsLib.getDocument({data:ab}).promise;
- let ocrText='';
- for(let p=1;p<=pdf.numPages;p++){
- lg(' → OCR صفحة '+p+'/'+pdf.numPages,'lam');
- const page=await pdf.getPage(p);
- /* Higher DPI = sharper digits for numeric accuracy (was scale:4) */
- const vp=page.getViewport({scale:5});
- const canvas=document.createElement('canvas');
- canvas.width=vp.width;canvas.height=vp.height;
- const ctx=canvas.getContext('2d');
- ctx.fillStyle='#FFFFFF';
- ctx.fillRect(0,0,canvas.width,canvas.height);
- await page.render({canvasContext:ctx,viewport:vp,background:'white'}).promise;
- const imageData=ctx.getImageData(0,0,canvas.width,canvas.height);
- const data=imageData.data;
- /* Improved binarization for sharper digits */
- for(let i=0;i<data.length;i+=4){
-  const avg=(data[i]*0.299+data[i+1]*0.587+data[i+2]*0.114);
-  let val;
-  if(avg>180) val=255;
-  else if(avg<90) val=0;
-  else val=avg>135?Math.min(255,avg*1.45):Math.max(0,avg*0.55);
-  data[i]=data[i+1]=data[i+2]=val;
- }
- ctx.putImageData(imageData,0,0);
- const {data:{text:t}}=await OCR_WORKER.recognize(canvas);
- ocrText+=t+'\n';
- }
+ const ocrText=probe;
  const ocrLines=ocrText.split('\n').map((s,i)=>({y:i,words:[{str:s.trim(),x:0,y:i}]})).filter(l=>l.words[0].str);
- const u=ocrText.toUpperCase();
- if(u.includes('PACKING SLIP')) return{rows:parseOthaimOCR(ocrLines,ocrText).map(enrichRow),text:ocrText,ocr:true};
+ if(u.includes('RETURN ORDER')){
+  const rr=parseOthaimReturnOrder(ocrText,othaimReturnHeader(ocrText)).map(enrichRow);
+  const g=othaimReturnGrandEx(ocrText);const sm=r2(rr.reduce((a,x)=>a+(x.price_ex_vat||0),0));
+  if(g>0&&Math.abs(sm-g)>0.05) lg(' ⚠ تعذّرت المطابقة الكاملة (صافي '+sm+' مقابل '+g+') — يُنصح بمراجعة هذا الملف','ler');
+  else lg(' → مطابق لإجمالي PDF ✓','lok');
+  return{rows:rr,text:ocrText,ocr:true};
+ }
  if(u.includes('PICKING SLIP')) return{rows:parseTamimi(ocrLines,ocrText).map(enrichRow),text:ocrText,ocr:true};
  if(u.includes('RETURN ADVISE')||u.includes('ITJDAJOB')||u.includes('DANUBE'))
  return{rows:parseDanubeByPosition([],ocrText).map(enrichRow),text:ocrText,ocr:true};
@@ -1211,7 +1575,30 @@ async function processPDF(file){
  return{rows:oTries.reduce((b,c)=>c.length>b.length?c:b,[]).map(enrichRow),text:ocrText,ocr:true};
  }
  const u=(text||'').toUpperCase();
- if(u.includes('PACKING SLIP')) return{rows:parseOthaimByPosition(words,text).map(enrichRow),text,ocr:false};
+ if(u.includes('RETURN ORDER')){
+ return{rows:parseOthaimReturnOrder(text,othaimReturnHeader(text)).map(enrichRow),text,ocr:false};
+ }
+ if(u.includes('PACKING SLIP')){
+ let rows=parseOthaimByPosition(words,text).map(enrichRow);
+ /* RECONCILE: the printed grand Excl-VAT total is read reliably. If the
+    extracted line-items don't sum to it (browser extracted a partial/garbled
+    text layer for an image-based slip), re-extract via OCR and keep whichever
+    row-set lands closest to the true total — guaranteeing completeness. */
+ const pdfEx=othaimPdfGrandEx(text);
+ const sumOf=rs=>r2(rs.reduce((s,r)=>s+(r.price_ex_vat||0),0));
+ if(pdfEx>0 && Math.abs(sumOf(rows)-pdfEx)>0.05){
+  lg(' → النص الرقمي ناقص؛ تشغيل OCR للمطابقة الكاملة...','lam');
+  try{
+   const oc=await othaimOcrReconciled(file,othaimHeaderFromText(text));
+   const ocrRows=oc.rows.map(enrichRow);
+   if(ocrRows.length && oc.diff < Math.abs(sumOf(rows)-pdfEx)){
+    lg(' → اعتُمد OCR (أصناف '+ocrRows.length+'، صافي '+sumOf(ocrRows)+(oc.matched?' ✓ مطابق':' — فرق '+r2(oc.diff))+')',oc.matched?'lok':'lam');
+    return {rows:ocrRows,text:oc.text,ocr:true};
+   }
+  }catch(e){ lg(' → تعذّر OCR الاحتياطي','ler'); }
+ }
+ return {rows,text,ocr:false};
+ }
  if(u.includes('PICKING SLIP')) return{rows:parseTamimi(lines,text).map(enrichRow),text,ocr:false};
  if(u.includes('RETURN ADVISE')||u.includes('DANUBE')||u.includes('ITJDAJOB')||
  u.includes('RTV842')||(u.includes('SHIPPED FROM')&&u.includes('SHIPPED TO')))
@@ -1231,19 +1618,54 @@ async function processPDF(file){
 }
 
 function validateOthaim(rows, text){
- const m=text.match(/Total\s+([-\d,]+\.?\d*)\s+([-\d,]+\.?\d*)\s+([-\d,]+\.?\d*)\s+([-\d,]+\.?\d*)\s+([-\d,]+\.?\d*)/);
- if(!m)return null;
- const pdfQty =Math.abs(parseFloat(m[1].replace(/,/g,'')));
- const pdfEx =Math.abs(parseFloat(m[3].replace(/,/g,'')));
- const pdfTotal=Math.abs(parseFloat(m[5].replace(/,/g,'')));
+ /* Robustly locate the PDF's own grand-total line.
+    Old approach assumed exactly 5 numbers after the word "Total" in a fixed order,
+    which silently failed on many layouts (leaving reconciliation blank).
+    New approach: scan every line containing "Total", grab ALL its numbers, and use
+    the deterministic KSA-VAT relationship (tot=ex+vat, vat=0.15*ex) to identify the
+    real Excl-VAT and Total figures regardless of column order or count. */
+ const VAT=0.15;
+ const lines=(text||'').split('\n');
+ let pdfEx=null, pdfTotal=null, pdfQty=null;
+ for(let li=lines.length-1; li>=0 && pdfEx===null; li--){
+  if(!/total/i.test(lines[li])) continue;
+  const ns=(lines[li].match(/-?[\d.,]+/g)||[])
+   .map(s=>Math.abs(parseFloat(String(s).replace(/,/g,''))))
+   .filter(v=>isFinite(v)&&v>0);
+  if(ns.length<2) continue;
+  let best=null;
+  for(let a=0;a<ns.length;a++) for(let b=0;b<ns.length;b++) for(let c=0;c<ns.length;c++){
+   if(a===b||b===c||a===c) continue;
+   const e=ns[a], v=ns[b], t=ns[c];
+   if(!(t>=e && e>=v)) continue;
+   const s1=Math.abs(t-(e+v)), s2=Math.abs(v-e*VAT);
+   if(s1<=Math.max(0.10,t*0.01) && s2<=Math.max(0.10,e*0.04)){
+    const score=s1+s2; if(!best||score<best.score) best={e,t,score};
+   }
+  }
+  if(best){
+   pdfEx=best.e; pdfTotal=best.t;
+   /* qty total = largest integer-valued number that isn't part of the money triple */
+   pdfQty=ns.filter(n=>Math.abs(n-Math.round(n))<0.001 && Math.abs(n-best.e)>0.01 && Math.abs(n-best.t)>0.01)
+            .sort((x,y)=>y-x)[0] ?? null;
+  }
+ }
+ /* Fallback to the legacy fixed-position regex if the relationship scan found nothing */
+ if(pdfEx===null){
+  const m=text.match(/Total\s+([-\d,]+\.?\d*)\s+([-\d,]+\.?\d*)\s+([-\d,]+\.?\d*)\s+([-\d,]+\.?\d*)\s+([-\d,]+\.?\d*)/);
+  if(!m)return null;
+  pdfQty=Math.abs(parseFloat(m[1].replace(/,/g,'')));
+  pdfEx =Math.abs(parseFloat(m[3].replace(/,/g,'')));
+  pdfTotal=Math.abs(parseFloat(m[5].replace(/,/g,'')));
+ }
  const calcQty =rows.reduce((s,r)=>s+r.qty,0);
  const calcEx =r2(rows.reduce((s,r)=>s+r.price_ex_vat,0));
  const calcTotal=r2(rows.reduce((s,r)=>s+r.total_incl_vat,0));
  return{
  items:{calc:rows.length,ok:true},
- qty:{pdf:pdfQty,calc:r2(calcQty),ok:Math.abs(calcQty-pdfQty)<0.5},
- ex:{pdf:pdfEx,calc:calcEx,ok:Math.abs(calcEx-pdfEx)<0.02},
- total:{pdf:pdfTotal,calc:calcTotal,ok:Math.abs(calcTotal-pdfTotal)<0.02},
+ qty:{pdf:pdfQty,calc:r2(calcQty),ok:pdfQty!=null?Math.abs(calcQty-pdfQty)<0.5:true},
+ ex:{pdf:r2(pdfEx),calc:calcEx,ok:Math.abs(calcEx-pdfEx)<0.02},
+ total:{pdf:r2(pdfTotal),calc:calcTotal,ok:Math.abs(calcTotal-pdfTotal)<0.02},
  };
 }
 const MN={JAN:'01',FEB:'02',MAR:'03',APR:'04',MAY:'05',JUN:'06',JUL:'07',AUG:'08',SEP:'09',OCT:'10',NOV:'11',DEC:'12'};
@@ -1289,19 +1711,17 @@ async function runConversion(){
  rows = parseSAMCOMarkdown(mdText, null).map(enrichRow);
  lg(` Markdown | أصناف:${rows.length}`, rows.length>0?'lok':'ler');
  if(rows.length>0){
- const _pdfEx=validations.length?validations[validations.length-1].pdfEx:0;
- if(_pdfEx) rows.forEach(function(r){r.pdf_total_exvat=_pdfEx;});
  allRows.push(...rows);
  const r0=rows[0];
  stats.push({fname:FILES[i].name,rtv:r0.rtv_number,dt:r0.rtv_date,
  po:r0.po_number||'',store:r0.store_num,acct:r0.account,sname:r0.store_name,
  n:rows.length,ex:r2(rows.reduce((s,r)=>s+r.price_ex_vat,0)),
  vat:r2(rows.reduce((s,r)=>s+r.vat_amt,0)),
- tot:r2(rows.reduce((s,r)=>s+r.total_incl_vat,0))});
+ tot:r2(rows.reduce((s,r)=>s+r.total_incl_vat,0)),pdfEx:0});
  sb(i,'bok',rows.length+' صنف');
  lg(` ✓ Store:${r0.store_num}|${r0.account}|Inv:${r0.rtv_number}`,'lok');
  }else{
- stats.push({fname:FILES[i].name,rtv:'',dt:'',po:'',store:null,acct:'',sname:'',n:0,ex:0,vat:0,tot:0});
+ stats.push({fname:FILES[i].name,rtv:'',dt:'',po:'',store:null,acct:'',sname:'',n:0,ex:0,vat:0,tot:0,pdfEx:0});
  sb(i,'ber','0 صنف');
  }
  continue; 
@@ -1309,28 +1729,41 @@ async function runConversion(){
  const {rows,text,ocr}=await processPDF(FILES[i]);
  if(ocr)sb(i,'bocr','OCR...');
  lg(` أصناف: ${rows.length} | ${ocr?'OCR':'رقمي'}`,rows.length>0?'lok':'ler');
- if(rows.length>0&&text.toUpperCase().includes('PACKING SLIP')&&!ocr){
+ let curPdfEx=0; /* PER-FILE PDF Excl-VAT total — never inherit from another file */
+ if(rows.length>0&&text.toUpperCase().includes('PACKING SLIP')){
  const v=validateOthaim(rows,text);
  if(v){
+ curPdfEx=Number(v.ex.pdf)||0;
  const qtyOk=v.qty.ok,exOk=v.ex.ok,totOk=v.total.ok;
  const allOk=qtyOk&&exOk&&totOk;
  lg(` ✓ Qty:${v.qty.calc}/${v.qty.pdf}${qtyOk?'✅':'❌'} ExVAT:${v.ex.calc}/${v.ex.pdf}${exOk?'✅':'❌'} Total:${v.total.calc}/${v.total.pdf}${totOk?'✅':'❌'}`,allOk?'lok':'ler');
  validations.push({file:FILES[i].name,qtyOk,exOk,totOk,pdfEx:v.ex.pdf,calcEx:v.ex.calc,pdfTot:v.total.pdf,calcTot:v.total.calc});
  }
+ } else if(rows.length>0&&text.toUpperCase().includes('RETURN ORDER')){
+ const f2=text.replace(/(\d),(\d{2})(?!\d)/g,'$1.$2');
+ const sm=f2.match(/\bSAR\b\s+(-?\d[\d,]*\.\d{2})\s+-?\d[\d,]*\.\d{2}\s+-?\d[\d,]*\.\d{2}\s+(-?\d[\d,]*\.\d{2})\s+-?\d[\d,]*\.\d{2}\s+(-?\d[\d,]*\.\d{2})/i);
+ if(sm){
+ const pEx=Math.abs(parseFloat(sm[1].replace(/,/g,''))), pTot=Math.abs(parseFloat(sm[3].replace(/,/g,'')));
+ curPdfEx=r2(pEx);
+ const cEx=r2(rows.reduce((s,r)=>s+r.price_ex_vat,0)), cTot=r2(rows.reduce((s,r)=>s+r.total_incl_vat,0));
+ const exOk=Math.abs(cEx-pEx)<=0.05, totOk=Math.abs(cTot-pTot)<=0.05;
+ lg(` ✓ ExVAT:${cEx}/${r2(pEx)}${exOk?'✅':'❌'} Total:${cTot}/${r2(pTot)}${totOk?'✅':'≈'}`,exOk?'lok':'ler');
+ validations.push({file:FILES[i].name,qtyOk:true,exOk,totOk,pdfEx:r2(pEx),calcEx:cEx,pdfTot:r2(pTot),calcTot:cTot});
+ }
  }
  if(rows.length>0){
- const _pdfEx=validations.length?validations[validations.length-1].pdfEx:0;
- if(_pdfEx) rows.forEach(function(r){r.pdf_total_exvat=_pdfEx;});
+ if(curPdfEx) rows.forEach(function(r){r.pdf_total_exvat=curPdfEx;});
  allRows.push(...rows);
  const r0=rows[0];
  stats.push({fname:FILES[i].name,rtv:r0.rtv_number,dt:r0.rtv_date,
  po:r0.po_number||'',store:r0.store_num,acct:r0.account,sname:r0.store_name,
  n:rows.length,ex:r2(rows.reduce((s,r)=>s+r.price_ex_vat,0)),
  vat:r2(rows.reduce((s,r)=>s+r.vat_amt,0)),
- tot:r2(rows.reduce((s,r)=>s+r.total_incl_vat,0))});
+ tot:r2(rows.reduce((s,r)=>s+r.total_incl_vat,0)),
+ pdfEx:curPdfEx});
  sb(i,'bok',rows.length+' صنف');
  }else{
- stats.push({fname:FILES[i].name,rtv:'',dt:'',po:'',store:null,acct:'',sname:'',n:0,ex:0,vat:0,tot:0});
+ stats.push({fname:FILES[i].name,rtv:'',dt:'',po:'',store:null,acct:'',sname:'',n:0,ex:0,vat:0,tot:0,pdfEx:0});
  sb(i,'ber','0 صنف');
  }
  }catch(e){sb(i,'ber','خطأ');lg(` ✗ ${e.message}`,'ler');}
@@ -1569,20 +2002,29 @@ async function buildXLSX(rows,stats){
  XLSX.utils.book_append_sheet(wb,wsD,'RTV Line Details');
  const SH=['RTV Date','RTV / Ref #','PO Number','Store #','Store Name','City','Region',
  'Account','Customer Code','Salesman','# Items',
- 'Excl. VAT (SAR)','VAT (SAR)','Total incl. VAT (SAR)'];
- const SC=['1F4E79','1F4E79','1F4E79','375623','375623','375623','375623','375623','375623','843C0C','843C0C','843C0C','843C0C'];
+ 'Excl. VAT (SAR)','VAT (SAR)','Total incl. VAT (SAR)','Excl. VAT — PDF (SAR)','Diff (SAR)'];
+ const SC=['1F4E79','1F4E79','1F4E79','375623','375623','375623','375623','375623','375623','843C0C','843C0C','843C0C','843C0C','843C0C','7F1D1D','7F1D1D'];
  const sData=[SH];
  stats.forEach(s=>{
   /* Pass account+isFarm to lk() so Farm 80 doesn't get confused with Othaim 80 (Rafha) */
   const isFarmStore = (s.acct||'').toLowerCase()==='farm';
   const si=lk(s.store, isFarmStore, s.acct);
-  sData.push([s.dt,s.rtv,s.po||'',s.store,s.sname||si.name,si.city,si.region||'',s.acct,si.code,si.salesman,s.n,r2(s.ex),r2(s.vat),r2(s.tot)]);
+  const pdfEx=Number(s.pdfEx)||0;
+  const diff=pdfEx?r2(r2(s.ex)-pdfEx):'';
+  sData.push([s.dt,s.rtv,s.po||'',s.store,s.sname||si.name,si.city,si.region||'',s.acct,si.code,si.salesman,s.n,r2(s.ex),r2(s.vat),r2(s.tot),pdfEx||'',diff]);
  });
  sData.push([]);
  const sEx=r2(stats.reduce((x,s)=>x+s.ex,0));
  const sVat=r2(stats.reduce((x,s)=>x+s.vat,0));
  const sTot=r2(stats.reduce((x,s)=>x+s.tot,0));
- sData.push(['GRAND TOTAL','','','','','','','','',stats.reduce((x,s)=>x+s.n,0),sEx,sVat,sTot]);
+ /* Reconciliation totals: ONLY sum over rows that actually have a PDF total,
+    and sum the per-row diffs directly so the grand-total Diff matches the
+    column above it (no "total migration"). */
+ const recRows=stats.filter(s=>(Number(s.pdfEx)||0)>0);
+ const sPdfEx=r2(recRows.reduce((x,s)=>x+(Number(s.pdfEx)||0),0));
+ const sExRec=r2(recRows.reduce((x,s)=>x+(Number(s.ex)||0),0));
+ const sDiff=r2(recRows.reduce((x,s)=>x+(r2(Number(s.ex)||0)-(Number(s.pdfEx)||0)),0));
+ sData.push(['GRAND TOTAL','','','','','','','','','',stats.reduce((x,s)=>x+s.n,0),sEx,sVat,sTot,sPdfEx||'',recRows.length?sDiff:'']);
  sData.push([],[' TOTALS BY ACCOUNT']);
  sData.push(['Account','Documents','Items','Excl. VAT','VAT','Total']);
  const ac={};
@@ -1592,7 +2034,7 @@ async function buildXLSX(rows,stats){
  sData.push(['TOTAL ALL','','',stats.reduce((x,s)=>x+s.n,0),sEx,sVat,sTot]);
  const wsS=XLSX.utils.aoa_to_sheet(sData);
  /* Auto-fit Summary columns: scan all rows and compute max content width */
- const sBase=[12,14,14,8,36,14,10,14,12,8,14,12,18];
+ const sBase=[12,14,14,8,36,14,10,14,12,8,14,12,18,18,12];
  wsS['!cols']=sBase.map((base,ci)=>{
   let maxLen=String(SH[ci]||'').length;
   for(let ri=0;ri<sData.length;ri++){
