@@ -1427,81 +1427,19 @@ function parseTamimi(lines,text){
  /* No `seen` set here: if the same item appears multiple times in the source PDF
     (e.g. damaged + expired packs of the same SKU on separate lines), we MUST keep
     all rows. Otherwise the calculated total will be LESS than the PDF total. */
- /* numbers may carry a thousands separator (e.g. "1,570.80"); strip commas
+ /* numbers may carry a thousands separator (e.g. "1,400.00"); strip commas
     before converting so large line items are not dropped by the regex. */
  const num=s=>parseFloat(String(s).replace(/,/g,''))||0;
- const UOM='EA|PAC|PCS|PC|CAS|CS|BOX|CTN|BAG|SET|DZ|KG';
- /* strict: full row incl. cost-center column; lenient: cost-center optional,
-    flexible spacing around "Per" and "%". Both accept thousands commas. */
- const RE_STRICT =new RegExp('^(\\d{6})\\s+(.+?)\\s+([\\d.,]+)\\s+('+UOM+')\\s+([\\d.,]+)\\s+Per\\s+(?:'+UOM+')\\s+([\\d.,]+)\\s+(\\d+)\\s*%\\s+([\\d.,]+)\\s+\\S+\\s*$');
- const RE_LENIENT=new RegExp('^(\\d{6})\\s+(.+?)\\s+([\\d.,]+)\\s+('+UOM+')\\s+([\\d.,]+)\\s*Per\\s*(?:'+UOM+')\\s+([\\d.,]+)\\s+(\\d+)\\s*%\\s+([\\d.,]+)');
- const RE_ANCHOR =new RegExp('^(\\d{6})\\s+(.+?)\\s+([\\d.,]+)\\s+('+UOM+')\\b([\\s\\S]*)$');
- const failed=[];
- const texts=lines.map(l=>lineText(l));
- texts.forEach((raw,i)=>{
-  const line=raw.trim();
-  if(!/^\d{6}\s/.test(line)) return;
-  let m=line.match(RE_STRICT)||line.match(RE_LENIENT);
-  if(!m){
-   /* last-resort: anchor on the UoM token, then read the money fields around "15 %"
-      positionally — rescues rows with odd spacing / merged tokens. */
-   const um=line.match(RE_ANCHOR);
-   if(um){
-    const parts=um[5].replace(/\d+\s*%/,' \u00a7 ').split('\u00a7');
-    const before=(parts[0].match(/\d[\d.,]*/g)||[]).map(num).filter(n=>n>0);
-    const after =((parts[1]||'').match(/\d[\d.,]*/g)||[]).map(num).filter(n=>n>0);
-    if(before.length>=2&&after.length>=1){
-     m=[line,um[1],um[2],um[3],um[4],String(before[0]),String(before[before.length-1]),'15',String(after[0])];
-    }
-   }
-  }
-  if(!m){ failed.push(line.slice(0,45)); return; }
-  /* multi-line description: Tamimi wraps pack-size to a 2nd line
-     (e.g. "GALAXY COOKIE CRUNBLE CHOLT BAR" + "6/24/36G").
-     Append the next line only if it is short plain-ASCII text
-     (Arabic mirror lines contain non-ASCII / control chars and are skipped). */
-  let desc=m[2].trim();
-  for(let j=i+1;j<Math.min(i+3,texts.length);j++){
-   const nx=texts[j].trim();
-   if(!nx) continue;
-   if(/^\d{6}\s/.test(nx)) break;
-   if(/Per\s|%|Payment|Page|Amount|Vendor|Store|Article|Details|Sign/i.test(nx)) break;
-   if(/[^\x20-\x7E]/.test(nx)) break;
-   if(nx.length>40) break;
-   desc+=' '+nx;
-   break;
-  }
-  const ex=num(m[6]),v=num(m[8]);
-  rows.push({...h,item_number:zp(m[1]),description:desc,
-   qty:num(m[3]),unit:m[4],unit_price:num(m[5]),
-   price_ex_vat:r2(ex),vat_amt:r2(v),total_incl_vat:r2(ex+v)});
+ lines.forEach(l=>{
+ const line=lineText(l);
+ const m=line.match(/^(\d{6})\s+(.+?)\s+([\d.,]+)\s+(EA|PAC|PC|CAS|BOX|CTN|BAG|SET)\s+([\d.,]+)\s+Per\s+(?:EA|PAC|PC|CAS|BOX|CTN|BAG|SET)\s+([\d.,]+)\s+(\d+)\s+%\s+([\d.,]+)\s+\S+\s*$/);
+ if(m){
+ const ex=num(m[6]),v=num(m[8]);
+ rows.push({...h,item_number:zp(m[1]),description:m[2].trim(),
+ qty:num(m[3]),unit:m[4],unit_price:num(m[5]),
+ price_ex_vat:r2(ex),vat_amt:r2(v),total_incl_vat:r2(ex+v)});
+ }
  });
- /* ── per-row sanity: KSA VAT is a fixed 15%, so re-derive vat/total from ex-VAT
-       whenever the read VAT column disagrees (column shift / OCR noise). ── */
- rows.forEach(r=>{
-  const expVat=r2(r.price_ex_vat*0.15);
-  if(Math.abs(r.vat_amt-expVat)>Math.max(0.05,r.price_ex_vat*0.01)){
-   r.vat_amt=expVat; r.total_incl_vat=r2(r.price_ex_vat*1.15);
-  }
- });
- /* ── grand-total reconciliation against the printed "Net Amount … SAR" footer.
-       If the extracted sum ≠ the invoice net, warn loudly and list unread lines
-       so a partial conversion can never pass silently again. ── */
- try{
-  const netM=text.match(/Net\s*Amount[\s\S]{0,200}?(\d{1,3}(?:,\d{3})*\.\d{2})\s*SAR/i);
-  const sum=r2(rows.reduce((a,r)=>a+r.price_ex_vat,0));
-  if(netM){
-   const net=num(netM[1]);
-   if(Math.abs(sum-net)<=0.05){
-    lg(' \u2713 Tamimi: \u0645\u062c\u0645\u0648\u0639 \u0627\u0644\u0623\u0635\u0646\u0627\u0641 '+sum.toFixed(2)+' = \u0635\u0627\u0641\u064a \u0627\u0644\u0641\u0627\u062a\u0648\u0631\u0629 '+net.toFixed(2)+' \u0631.\u0633 ('+rows.length+' \u0635\u0646\u0641)','lok');
-   }else{
-    lg(' \u26a0 Tamimi: \u0627\u0644\u0645\u0633\u062a\u062e\u0631\u062c '+sum.toFixed(2)+' \u2260 \u0635\u0627\u0641\u064a \u0627\u0644\u0641\u0627\u062a\u0648\u0631\u0629 '+net.toFixed(2)+' \u0631.\u0633 \u2014 \u0641\u0631\u0642 '+(net-sum).toFixed(2),'ler');
-    if(failed.length) lg(' \u26a0 \u0623\u0633\u0637\u0631 \u0644\u0645 \u062a\u064f\u0642\u0631\u0623 ('+failed.length+'): '+failed.join(' | '),'ler');
-   }
-  }else if(failed.length){
-   lg(' \u26a0 Tamimi: '+failed.length+' \u0633\u0637\u0631 \u0635\u0646\u0641 \u0644\u0645 \u064a\u064f\u0641\u0647\u0645: '+failed.join(' | '),'lam');
-  }
- }catch(e){}
  return rows;
 }
 function parseSAMCOMarkdown(text, words){
@@ -1513,7 +1451,10 @@ function parseSAMCOMarkdown(text, words){
  const ITEM_CODE = /^\d{8}-\d{4}$/;
  const byY = {};
  words.forEach(w=>{const k=Math.round(w.y/4)*4; if(!byY[k])byY[k]=[]; byY[k].push(w);});
- const rows=[], seen=new Set();
+ /* No dedup: an RTV can legitimately list the same SKU on separate lines
+    (different return reasons/batches). Merging identical code+qty+gross rows
+    makes the calculated total LESS than the invoice total. Keep every row. */
+ const rows=[];
  Object.values(byY).forEach(rw=>{
  const codeW = rw.find(w=>ITEM_CODE.test(w.str) && w.x>90 && w.x<130);
  if(!codeW) return;
@@ -1530,8 +1471,6 @@ function parseSAMCOMarkdown(text, words){
  const vat = num(615,645);
  const net = num(672,705);
  if(!qty||!gross) return;
- const key=codeW.str+'-'+qty+'-'+gross;
- if(seen.has(key)) return; seen.add(key);
  rows.push({...h,
  item_number : codeW.str,
  description : desc,
@@ -1546,12 +1485,11 @@ function parseSAMCOMarkdown(text, words){
  if(rows.length>0) return rows;
  }
  const TABLE_RE = /\|(\d+)\|([\w.-]+[-\/][\w.-]+|\d{8,})\|(.+?)\|(\w+)\|(\d+)\|([\d.]+)\|([\d.]+)\|[\d.]+\|([\d.]+)\|\d+\s*%?\|([\d.]+)\|([\d.]+)\|/g;
- const rows2=[], seen2=new Set();
+ const rows2=[];
  let m;
  while((m=TABLE_RE.exec(text))!==null){
  const code=m[2],qty=+m[6],gross=+m[8],vat=+m[9],net=+m[10];
- const key=code+'-'+qty+'-'+gross;
- if(seen2.has(key))continue; seen2.add(key);
+ /* keep repeated SKU rows (see note above) — no dedup */
  rows2.push({...h,item_number:code,description:m[3].replace(/~~|<br>|\*\*/g,'').trim(),
  qty,unit:m[4],unit_price:+m[7],price_ex_vat:gross,vat_amt:vat,total_incl_vat:net});
  }
