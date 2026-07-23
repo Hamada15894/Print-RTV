@@ -1088,84 +1088,245 @@ function findOthaimTriple(pos, VAT){
      (2) a self-validating 15%-VAT triple among the numbers that follow it.
    The grand "Total" line (no 6-digit code) is naturally excluded, and a
    comma-as-decimal OCR slip (e.g. "-64,32") is normalised before parsing. */
-function extractOthaimItemsFromText(text, h){
+/* ── OTHAIM ENGINE v2 ────────────────────────────────────────────────────────
+   Othaim's system exports the SAME return in more than one PDF flavour:
+     • digital  "Packing slip"      → a real text layer
+     • scanned  "Packing slip copy" → image-only pages (OCR required)
+     • "Return order"               → different column set (own parser)
+   The two slip flavours share one table structure, so ONE position-independent
+   engine reads both. Robustness comes from the redundancy Othaim prints on
+   every item block:
+
+     CODE  DESCRIPTION   -q.00 PCS   unit   -q.00   0.00   ex   vat   total
+           DESCRIPTION (repeated, may wrap over 2 lines)
+           Quantity : -q   Site : 01   Warehouse : 403   Location : SELL
+
+   → quantity appears THREE times, and ex·1.15 = total, vat = ex·0.15,
+     ex = qty · unit. Any single OCR casualty is therefore recoverable.
+
+   Two independent segmentations are run and scored against the PDF's own
+   printed grand total; the better one wins and is then topped up from the
+   other, so a block lost by one strategy is still recovered by the other. */
+
+/* Normalise OCR noise without touching the digits that matter. */
+function othaimNorm(t){
+ return (t||'')
+  .replace(/\u00a0/g,' ')
+  .replace(/[\u0660-\u0669]/g,d=>String.fromCharCode(d.charCodeAt(0)-0x0660+48))
+  .replace(/[\u06F0-\u06F9]/g,d=>String.fromCharCode(d.charCodeAt(0)-0x06F0+48))
+  .replace(/[\u2010-\u2015\u2212\u2043]/g,'-')
+  /* decimal comma / stray space before the cents: "-1,50" "37. 49" → "-1.50" "37.49".
+     A thousands comma is followed by THREE digits so it is never touched. */
+  .replace(/(\d)\s*[,]\s*(\d{2})(?!\d)/g,'$1.$2')
+  .replace(/(\d)\s*[.]\s*(\d{2})(?!\d)/g,'$1.$2')
+  /* footer keywords as Tesseract commonly mangles them */
+  .replace(/\bQuan[a-z]{0,6}\b\s*[:;.]/gi,'Quantity :')
+  .replace(/\bS[il1|]te\b/gi,'Site')
+  .replace(/\bWare\s?h[o0]use\b/gi,'Warehouse')
+  .replace(/\bLocat[a-z]{0,4}\b/gi,'Location')
+  .replace(/\bP\s?[C(]\s?[S5]\b/gi,'PCS')
+  .replace(/[ \t]+/g,' ');
+}
+/* Digit-lookalike repair, used ONLY on a token already known to sit in the
+   item-number column, so it can never invent a code out of prose. */
+function othaimFixCode(tok){
+ const t=String(tok).replace(/[OoQD]/g,'0').replace(/[IlL|!]/g,'1')
+   .replace(/[Ss]/g,'5').replace(/[Bb]/g,'8').replace(/[Zz]/g,'2')
+   .replace(/[Gg]/g,'6').replace(/[Tt]/g,'7').replace(/[^0-9]/g,'');
+ return /^\d{6}$/.test(t)?t:null;
+}
+/* Solve one item block into {qty,unit,ex,vat,tot,conf}. `conf` is 'exact' when
+   the PDF's own three money columns agree with each other, 'repaired' when one
+   column was rebuilt from the other two, and 'derived' when the amount had to
+   be rebuilt from qty × unit price. */
+function othaimSolveBlock(seg, footQty){
  const VAT=0.15;
- /* collapse whitespace; turn OCR "64,32" into "64.32" (thousands "1,708" stays
-    because a thousands comma is followed by 3 digits, not 2). */
- const flat=(text||'').replace(/\s+/g,' ').replace(/(\d),(\d{2})(?!\d)/g,'$1.$2');
- const codeRe=/(?<![\d.])(\d{6})(?![\d])/g; const codes=[]; let m;
- while((m=codeRe.exec(flat))) codes.push({code:m[1],idx:m.index});
- const tm=flat.search(/\bTotal\b\s+-?[\d,]/i); const totalIdx=tm<0?flat.length:tm;
- /* validate a (ex,vat,tot) triple against the 15% KSA-VAT relationship */
- const triOK=(e,v,t)=> e>0.009 && t>=e && e>=v &&
-   Math.abs(t-(e+v))<=Math.max(0.06,t*0.012) &&
+ const pcsIdx=seg.search(/\bPCS\b/i);
+ /* qty — three redundant sources, footer first (it is the cleanest to OCR) */
+ let qty=footQty!=null&&isFinite(footQty)?Math.abs(footQty):null;
+ const pcsM=seg.match(/(-?\d[\d,]*(?:\.\d+)?)\s*PCS/i);
+ const pcsQty=pcsM?Math.abs(parseFloat(pcsM[1].replace(/,/g,''))):null;
+ if(qty==null||qty===0) qty=pcsQty;
+ const tail=pcsIdx>=0?seg.slice(pcsIdx+3):seg;
+ const nums=(tail.match(/-?\d[\d,]*\.\d{2}\b/g)||[])
+   .map(s=>Math.abs(parseFloat(s.replace(/,/g,'')))).filter(v=>v>0.009);
+ /* integers too — an OCR-lost decimal point turns "-37.49" into "-3749" */
+ const rawTok=(tail.match(/-?\d[\d,]*(?:\.\d+)?/g)||[])
+   .map(s=>Math.abs(parseFloat(s.replace(/,/g,'')))).filter(v=>isFinite(v)&&v>0);
+ const ok=(e,v,t)=> e>0.009&&t>=e&&e>=v&&
+   Math.abs(t-(e+v))<=Math.max(0.06,t*0.012)&&
    Math.abs(v-e*VAT)<=Math.max(0.07,e*0.05);
+ let ex=null,vat=null,tot=null,conf='exact';
+ /* 1 ── the three printed money columns, self-validating */
+ if(nums.length>=3){
+  const e=nums[nums.length-3],v=nums[nums.length-2],t=nums[nums.length-1];
+  if(ok(e,v,t)){ex=e;vat=v;tot=t;}
+ }
+ /* 2 ── total ≈ 1.15·ex : survives a mangled VAT column */
+ if(ex===null&&nums.length>=2){
+  const t=nums[nums.length-1];
+  let bE=null,bS=1e9;
+  for(let k=0;k<nums.length-1;k++){
+   const e=nums[k]; if(e<=0.009||t<e)continue;
+   const s=Math.abs(t-1.15*e);
+   if(s<=Math.max(0.06,t*0.013)&&s<bS){bS=s;bE=e;}
+  }
+  if(bE!==null){ex=bE;tot=t;vat=r2(t-bE);conf='repaired';}
+ }
+ /* 3 ── an adjacent surviving pair rebuilds the third column */
+ if(ex===null&&nums.length>=2){
+  for(let k=nums.length-2;k>=0;k--){
+   const a=nums[k],b=nums[k+1];
+   if(a>b&&Math.abs(b-a*VAT)<=Math.max(0.07,a*0.05)){ex=a;vat=b;tot=r2(a+b);conf='repaired';break;}
+   if(b>a&&Math.abs(b-a*(1.15/0.15))<=Math.max(0.08,b*0.02)){vat=a;tot=b;ex=r2(b-a);conf='repaired';break;}
+  }
+ }
+ /* 4 ── free triple search anywhere in the block */
+ if(ex===null){
+  const tri=findOthaimTriple(nums.length>=3?nums:rawTok,VAT);
+  if(tri){ex=tri.ex;vat=tri.vat;tot=tri.tot;conf='repaired';}
+ }
+ /* 5 ── last resort: ex = qty × unit price. The unit price is the first number
+    after PCS and is printed positive, so it survives most OCR damage. Accept
+    only when some printed number corroborates it (ex or total). */
+ if(ex===null&&qty>0&&rawTok.length){
+  const unit=rawTok[0];
+  const cand=r2(qty*unit);
+  if(cand>0.009){
+   const corroborated=rawTok.some(v=>Math.abs(v-cand)<=Math.max(0.05,cand*0.01)
+                                   ||Math.abs(v-cand*1.15)<=Math.max(0.06,cand*0.013));
+   if(corroborated||rawTok.length>=3){
+    ex=cand;vat=r2(cand*VAT);tot=r2(cand*1.15);conf='derived';
+   }
+  }
+ }
+ if(ex===null)return null;
+ if(vat===null||!isFinite(vat))vat=r2(ex*VAT);
+ if(tot===null||!isFinite(tot))tot=r2(ex+vat);
+ /* qty fallback from ex ÷ unit when every printed quantity was unreadable */
+ if(qty==null||!isFinite(qty)||qty===0){
+  const unit=rawTok.length?rawTok[0]:0;
+  qty=unit>0?Math.round(ex/unit):0;
+  if(conf==='exact')conf='repaired';
+ }
+ /* cross-check the two independent quantity sources */
+ if(pcsQty!=null&&footQty!=null&&Math.abs(pcsQty-Math.abs(footQty))>0.01&&conf==='exact')conf='repaired';
+ return {qty,unit_price:qty>0?r2(ex/qty):0,ex:r2(ex),vat:r2(vat),tot:r2(tot),conf};
+}
+/* Description = everything between the item code and the quantity, with
+   Othaim's doubled printing collapsed back to one copy. */
+function othaimDesc(seg, code){
+ let s=seg.replace(new RegExp('^\\s*'+String(code).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')),' ');
+ const cut=s.search(/-?\d[\d,]*(?:\.\d+)?\s*PCS/i);
+ if(cut>0)s=s.slice(0,cut);
+ let toks=s.replace(/[|_]/g,' ').split(/\s+/).filter(Boolean)
+  .filter(t=>!/^(PCS|Unit|Price|Received|Remaining|quantity|Description|Item|number|Ordered|VAT|Amount|Total|before|with|Page|of)$/i.test(t));
+ if(toks.length>=2&&toks.length%2===0){
+  const h=toks.length/2;
+  if(toks.slice(0,h).join(' ')===toks.slice(h).join(' '))toks=toks.slice(0,h);
+ }
+ return toks.join(' ').replace(/\s+/g,' ').trim();
+}
+/* STRATEGY A — segment on the "Quantity : -N Site : .. Warehouse : .." footer
+   that closes every item block. Immune to a mis-read item code, which is the
+   failure that silently deletes a whole line under OCR. */
+function othaimExtractByBlocks(text, h){
+ const flat=othaimNorm(text).replace(/\s+/g,' ');
+ const tm=flat.search(/\bTotal\b\s+-?[\d,]/i);
+ const body=tm<0?flat:flat.slice(0,tm);
+ const FOOT=/Quantity\s*[:;.]?\s*(-?\s?\d{1,6})?\s*(?:Site\s*[:;.]?\s*\d*\s*)?(?:Warehouse\s*[:;.]?\s*\d*\s*)?(?:Location\s*[:;.]?\s*\S+)?/gi;
+ const blocks=[];let last=0,m;
+ while((m=FOOT.exec(body))){
+  if(m[0].trim().length<9){FOOT.lastIndex=m.index+1;continue;}
+  const q=m[1]?parseInt(String(m[1]).replace(/\s/g,''),10):null;
+  blocks.push({seg:body.slice(last,m.index),footQty:isFinite(q)?q:null});
+  last=FOOT.lastIndex;
+ }
+ if(last<body.length&&/\bPCS\b/i.test(body.slice(last)))blocks.push({seg:body.slice(last),footQty:null});
+ const rows=[];
+ blocks.forEach(b=>{
+  const seg=b.seg;
+  const pcsIdx=seg.search(/\bPCS\b/i);
+  /* the item code is the last 6-digit token BEFORE the PCS marker */
+  let code=null,rawTok=null;
+  const head=pcsIdx>0?seg.slice(0,pcsIdx):seg;
+  const strict=head.match(/(?<![\d.])\d{6}(?![\d])/g);
+  if(strict&&strict.length){code=strict[strict.length-1];rawTok=code;}
+  if(!code){ /* tolerant: a 6-char token followed by an upper-case word. The RAW
+     token is kept so the block can still be located in the untouched text. */
+   const t=head.match(/(?:^|\s)([0-9OoQDIlL|!SsBbZzGgTt]{6})\s+(?=\S*[A-Z])/g);
+   if(t&&t.length){rawTok=t[t.length-1].trim();code=othaimFixCode(rawTok);}
+  }
+  if(!code)return;
+  const idx=seg.lastIndexOf(rawTok);
+  const item=idx>=0?seg.slice(idx):seg;
+  const s=othaimSolveBlock(item,b.footQty);
+  if(!s)return;
+  rows.push({...h,item_number:code,description:othaimDesc(item,rawTok),
+   qty:s.qty,unit:'PCS',unit_price:s.unit_price,
+   price_ex_vat:s.ex,vat_amt:s.vat,total_incl_vat:s.tot,_conf:s.conf});
+ });
+ return rows;
+}
+/* STRATEGY B — segment on the item code itself (the original engine). Wins
+   when a footer line is destroyed but the code survives. */
+function othaimExtractByCodes(text, h){
+ const flat=othaimNorm(text).replace(/\s+/g,' ');
+ const codeRe=/(?<![\d.])(\d{6})(?![\d])/g;const codes=[];let m;
+ while((m=codeRe.exec(flat)))codes.push({code:m[1],idx:m.index});
+ const tm=flat.search(/\bTotal\b\s+-?[\d,]/i);const totalIdx=tm<0?flat.length:tm;
  const rows=[];
  for(let i=0;i<codes.length;i++){
   const start=codes[i].idx;
   let end=(i+1<codes.length)?codes[i+1].idx:flat.length;
   if(totalIdx>start&&totalIdx<end)end=totalIdx;
+  if(start>=totalIdx)break;
   const seg=flat.slice(start,end);
-  const qPos=seg.search(/Quantity\s*:/i);
+  const qPos=seg.search(/Quantity\s*[:;.]/i);
   const fin=qPos>=0?seg.slice(0,qPos):seg;
-  const after=fin.replace(new RegExp('^'+codes[i].code),'');
-  /* qty = value immediately before PCS (the Ordered column) */
-  const pcsM=after.match(/(-?\d[\d,]*(?:\.\d+)?)\s*PCS/i);
-  let qty=pcsM?Math.abs(parseFloat(pcsM[1].replace(/,/g,''))):null;
-  /* The financial columns (unit, received-qty, remaining, ex, vat, tot) all sit
-     AFTER "PCS" — restricting to them removes any numeric noise inside the
-     description (e.g. "150G", "30.6G"). */
-  const pcsIdx=pcsM?after.toUpperCase().indexOf('PCS',after.indexOf(pcsM[1])):-1;
-  const tail=pcsIdx>=0?after.slice(pcsIdx+3):after;
-  const tailNums=(tail.match(/-?\d[\d,]*\.\d{2}\b/g)||[])
-   .map(s=>Math.abs(parseFloat(s.replace(/,/g,'')))).filter(v=>v>0.009);
-  let ex=null,vat=null,tot=null;
-  /* PRIMARY anchor — the strongest invariant on every line is total ≈ 1.15·ex
-     (KSA 15% VAT). The printed total is the LAST money column, so derive:
-       tot = last money number,  ex = the number with tot≈1.15·ex,
-       vat = tot − ex  (exact, since printed total = ex + vat).
-     This needs only ex and tot, so a lost decimal in the VAT figure
-     (OCR "37.47" → "3747") can no longer drop the line. */
-  if(tailNums.length>=2){
-   const t=tailNums[tailNums.length-1];
-   let bestE=null,bestS=1e9;
-   for(let k=0;k<tailNums.length-1;k++){
-    const e=tailNums[k];
-    if(e<=0.009||t<e)continue;
-    const s=Math.abs(t-1.15*e);
-    if(s<=Math.max(0.06,t*0.013)&&s<bestS){bestS=s;bestE=e;}
-   }
-   if(bestE!==null){ex=bestE;tot=t;vat=r2(t-bestE);}
-  }
-  /* SECONDARY: last three money numbers as a self-validating (ex,vat,tot). */
-  if(ex===null&&tailNums.length>=3){
-   const e=tailNums[tailNums.length-3],v=tailNums[tailNums.length-2],t=tailNums[tailNums.length-1];
-   if(triOK(e,v,t)){ex=e;vat=v;tot=t;}
-  }
-  /* FALLBACK: free triple search over after-PCS, then the whole segment. */
-  if(ex===null){
-   const cand=tailNums.length>=3?tailNums:(after.match(/-?\d[\d,]*\.\d{2}\b/g)||[])
-     .map(s=>Math.abs(parseFloat(s.replace(/,/g,'')))).filter(v=>v>0.009);
-   const tri=findOthaimTriple(cand,VAT);
-   if(tri){ex=tri.ex;vat=tri.vat;tot=tri.tot;}
-  }
-  if(ex===null)continue;
-  if(qty==null||qty===0){
-   /* derive qty from ex/unit if PCS qty missing: unit is first after-PCS number */
-   const unitGuess=tailNums.length?tailNums[0]:0;
-   qty=unitGuess>0?Math.round(ex/unitGuess):0;
-  }
-  const unit=qty>0?r2(ex/qty):0;
-  let desc='';
-  const dm=after.match(/^\s*(.*?)\s+-?\d[\d,]*(?:\.\d+)?\s*PCS/i);
-  if(dm)desc=dm[1].replace(/\bPCS\b/ig,'').replace(/\s+/g,' ').trim();
-  rows.push({...h,
-   item_number:codes[i].code, description:desc, qty, unit:'PCS',
-   unit_price:unit, price_ex_vat:r2(ex), vat_amt:r2(vat), total_incl_vat:r2(tot)});
+  const fq=qPos>=0?(seg.slice(qPos).match(/Quantity\s*[:;.]?\s*(-?\d{1,6})/i)||[])[1]:null;
+  const s=othaimSolveBlock(fin,fq!=null?parseInt(fq,10):null);
+  if(!s)continue;
+  rows.push({...h,item_number:codes[i].code,description:othaimDesc(fin,codes[i].code),
+   qty:s.qty,unit:'PCS',unit_price:s.unit_price,
+   price_ex_vat:s.ex,vat_amt:s.vat,total_incl_vat:s.tot,_conf:s.conf});
  }
- rows.sort((a,b)=>a.item_number.localeCompare(b.item_number));
  return rows;
 }
+/* UNIVERSAL entry point — runs both strategies, scores each against the PDF's
+   own printed grand total, keeps the better, then tops it up with any block
+   the other strategy caught, accepting an addition only while it moves the
+   file CLOSER to that printed total. Nothing is ever added on a guess. */
+function extractOthaimItemsFromText(text, h){
+ const A=othaimExtractByBlocks(text,h);
+ const B=othaimExtractByCodes(text,h);
+ const grand=othaimPdfGrandEx(text);
+ const sum=rs=>r2(rs.reduce((s,r)=>s+(r.price_ex_vat||0),0));
+ let base,other;
+ if(grand>0){
+  const dA=Math.abs(sum(A)-grand),dB=Math.abs(sum(B)-grand);
+  if(dA<dB||(dA===dB&&A.length>=B.length)){base=A.slice();other=B;}
+  else {base=B.slice();other=A;}
+ } else if(A.length>=B.length){base=A.slice();other=B;}
+ else {base=B.slice();other=A;}
+ if(grand>0&&other.length){
+  const key=r=>r.item_number+'|'+r.price_ex_vat.toFixed(2);
+  const have={};base.forEach(r=>{have[key(r)]=(have[key(r)]||0)+1;});
+  let gap=r2(grand-sum(base));
+  other.forEach(r=>{
+   if(gap<=0.05)return;
+   const k=key(r);
+   if(have[k]){have[k]--;return;}
+   if(r.price_ex_vat<=gap+0.05){
+    base.push({...r,_conf:r._conf==='exact'?'repaired':r._conf});
+    have[k]=0;gap=r2(gap-r.price_ex_vat);
+   }
+  });
+ }
+ base.sort((a,b)=>a.item_number.localeCompare(b.item_number));
+ return base;
+}
+
 function parseOthaimStream(words, h){
  const stream=buildOthaimReadingStream(words).replace(/\s+/g,' ');
  const re=/\b(\d{6})\s+(.*?)\s+(-?\d+\.\d{2})\s+PCS\s+([\d,]+\.\d{2})\s+(-?[\d,]+\.\d{2})\s+0\.00\s+(-?[\d,]+\.\d{2})\s+(-?[\d,]+\.\d{2})\s+(-?[\d,]+\.\d{2})\s+(.*?)\s*(?=Quantity\s*:)/g;
@@ -1220,7 +1381,18 @@ function parseOthaimByPosition(words, text){
  const candA=extractOthaimItemsFromText(buildOthaimReadingStream(words),h);
  const candB=extractOthaimItemsFromText(text,h);
  const candC=parseOthaimStream(words,h);
- const universal=[candA,candB,candC].reduce((b,c)=>c.length>b.length?c:b,[]);
+ /* Choose the candidate that reconciles best against the PDF's printed grand
+    Excl-VAT total (the strongest ground truth); fall back to row count when
+    no grand total could be read. */
+ const grandEx=othaimPdfGrandEx(text);
+ const sumEx=rs=>r2(rs.reduce((s,r)=>s+(r.price_ex_vat||0),0));
+ const cands=[candA,candB,candC].filter(c=>c.length);
+ let universal=[];
+ if(cands.length){
+  universal = grandEx>0
+   ? cands.reduce((b,c)=>Math.abs(sumEx(c)-grandEx)<Math.abs(sumEx(b)-grandEx)?c:b)
+   : cands.reduce((b,c)=>c.length>b.length?c:b);
+ }
  if(universal.length) return universal;
  /* FALLBACK: legacy X-coordinate parser for any unexpected layout. */
  /* Group words by Y bucket (4-pt) keeping original Y for chaining */
@@ -1427,19 +1599,81 @@ function parseTamimi(lines,text){
  /* No `seen` set here: if the same item appears multiple times in the source PDF
     (e.g. damaged + expired packs of the same SKU on separate lines), we MUST keep
     all rows. Otherwise the calculated total will be LESS than the PDF total. */
- /* numbers may carry a thousands separator (e.g. "1,400.00"); strip commas
+ /* numbers may carry a thousands separator (e.g. "1,570.80"); strip commas
     before converting so large line items are not dropped by the regex. */
  const num=s=>parseFloat(String(s).replace(/,/g,''))||0;
- lines.forEach(l=>{
- const line=lineText(l);
- const m=line.match(/^(\d{6})\s+(.+?)\s+([\d.,]+)\s+(EA|PAC|PC|CAS|BOX|CTN|BAG|SET)\s+([\d.,]+)\s+Per\s+(?:EA|PAC|PC|CAS|BOX|CTN|BAG|SET)\s+([\d.,]+)\s+(\d+)\s+%\s+([\d.,]+)\s+\S+\s*$/);
- if(m){
- const ex=num(m[6]),v=num(m[8]);
- rows.push({...h,item_number:zp(m[1]),description:m[2].trim(),
- qty:num(m[3]),unit:m[4],unit_price:num(m[5]),
- price_ex_vat:r2(ex),vat_amt:r2(v),total_incl_vat:r2(ex+v)});
- }
+ const UOM='EA|PAC|PCS|PC|CAS|CS|BOX|CTN|BAG|SET|DZ|KG';
+ /* strict: full row incl. cost-center column; lenient: cost-center optional,
+    flexible spacing around "Per" and "%". Both accept thousands commas. */
+ const RE_STRICT =new RegExp('^(\\d{6})\\s+(.+?)\\s+([\\d.,]+)\\s+('+UOM+')\\s+([\\d.,]+)\\s+Per\\s+(?:'+UOM+')\\s+([\\d.,]+)\\s+(\\d+)\\s*%\\s+([\\d.,]+)\\s+\\S+\\s*$');
+ const RE_LENIENT=new RegExp('^(\\d{6})\\s+(.+?)\\s+([\\d.,]+)\\s+('+UOM+')\\s+([\\d.,]+)\\s*Per\\s*(?:'+UOM+')\\s+([\\d.,]+)\\s+(\\d+)\\s*%\\s+([\\d.,]+)');
+ const RE_ANCHOR =new RegExp('^(\\d{6})\\s+(.+?)\\s+([\\d.,]+)\\s+('+UOM+')\\b([\\s\\S]*)$');
+ const failed=[];
+ const texts=lines.map(l=>lineText(l));
+ texts.forEach((raw,i)=>{
+  const line=raw.trim();
+  if(!/^\d{6}\s/.test(line)) return;
+  let m=line.match(RE_STRICT)||line.match(RE_LENIENT);
+  if(!m){
+   /* last-resort: anchor on the UoM token, then read the money fields around "15 %"
+      positionally — rescues rows with odd spacing / merged tokens. */
+   const um=line.match(RE_ANCHOR);
+   if(um){
+    const parts=um[5].replace(/\d+\s*%/,' \u00a7 ').split('\u00a7');
+    const before=(parts[0].match(/\d[\d.,]*/g)||[]).map(num).filter(n=>n>0);
+    const after =((parts[1]||'').match(/\d[\d.,]*/g)||[]).map(num).filter(n=>n>0);
+    if(before.length>=2&&after.length>=1){
+     m=[line,um[1],um[2],um[3],um[4],String(before[0]),String(before[before.length-1]),'15',String(after[0])];
+    }
+   }
+  }
+  if(!m){ failed.push(line.slice(0,45)); return; }
+  /* multi-line description: Tamimi wraps pack-size to a 2nd line
+     (e.g. "GALAXY COOKIE CRUNBLE CHOLT BAR" + "6/24/36G").
+     Append the next line only if it is short plain-ASCII text
+     (Arabic mirror lines contain non-ASCII / control chars and are skipped). */
+  let desc=m[2].trim();
+  for(let j=i+1;j<Math.min(i+3,texts.length);j++){
+   const nx=texts[j].trim();
+   if(!nx) continue;
+   if(/^\d{6}\s/.test(nx)) break;
+   if(/Per\s|%|Payment|Page|Amount|Vendor|Store|Article|Details|Sign/i.test(nx)) break;
+   if(/[^\x20-\x7E]/.test(nx)) break;
+   if(nx.length>40) break;
+   desc+=' '+nx;
+   break;
+  }
+  const ex=num(m[6]),v=num(m[8]);
+  rows.push({...h,item_number:zp(m[1]),description:desc,
+   qty:num(m[3]),unit:m[4],unit_price:num(m[5]),
+   price_ex_vat:r2(ex),vat_amt:r2(v),total_incl_vat:r2(ex+v)});
  });
+ /* ── per-row sanity: KSA VAT is a fixed 15%, so re-derive vat/total from ex-VAT
+       whenever the read VAT column disagrees (column shift / OCR noise). ── */
+ rows.forEach(r=>{
+  const expVat=r2(r.price_ex_vat*0.15);
+  if(Math.abs(r.vat_amt-expVat)>Math.max(0.05,r.price_ex_vat*0.01)){
+   r.vat_amt=expVat; r.total_incl_vat=r2(r.price_ex_vat*1.15);
+  }
+ });
+ /* ── grand-total reconciliation against the printed "Net Amount … SAR" footer.
+       If the extracted sum ≠ the invoice net, warn loudly and list unread lines
+       so a partial conversion can never pass silently again. ── */
+ try{
+  const netM=text.match(/Net\s*Amount[\s\S]{0,200}?(\d{1,3}(?:,\d{3})*\.\d{2})\s*SAR/i);
+  const sum=r2(rows.reduce((a,r)=>a+r.price_ex_vat,0));
+  if(netM){
+   const net=num(netM[1]);
+   if(Math.abs(sum-net)<=0.05){
+    lg(' \u2713 Tamimi: \u0645\u062c\u0645\u0648\u0639 \u0627\u0644\u0623\u0635\u0646\u0627\u0641 '+sum.toFixed(2)+' = \u0635\u0627\u0641\u064a \u0627\u0644\u0641\u0627\u062a\u0648\u0631\u0629 '+net.toFixed(2)+' \u0631.\u0633 ('+rows.length+' \u0635\u0646\u0641)','lok');
+   }else{
+    lg(' \u26a0 Tamimi: \u0627\u0644\u0645\u0633\u062a\u062e\u0631\u062c '+sum.toFixed(2)+' \u2260 \u0635\u0627\u0641\u064a \u0627\u0644\u0641\u0627\u062a\u0648\u0631\u0629 '+net.toFixed(2)+' \u0631.\u0633 \u2014 \u0641\u0631\u0642 '+(net-sum).toFixed(2),'ler');
+    if(failed.length) lg(' \u26a0 \u0623\u0633\u0637\u0631 \u0644\u0645 \u062a\u064f\u0642\u0631\u0623 ('+failed.length+'): '+failed.join(' | '),'ler');
+   }
+  }else if(failed.length){
+   lg(' \u26a0 Tamimi: '+failed.length+' \u0633\u0637\u0631 \u0635\u0646\u0641 \u0644\u0645 \u064a\u064f\u0641\u0647\u0645: '+failed.join(' | '),'lam');
+  }
+ }catch(e){}
  return rows;
 }
 function parseSAMCOMarkdown(text, words){
@@ -1451,10 +1685,7 @@ function parseSAMCOMarkdown(text, words){
  const ITEM_CODE = /^\d{8}-\d{4}$/;
  const byY = {};
  words.forEach(w=>{const k=Math.round(w.y/4)*4; if(!byY[k])byY[k]=[]; byY[k].push(w);});
- /* No dedup: an RTV can legitimately list the same SKU on separate lines
-    (different return reasons/batches). Merging identical code+qty+gross rows
-    makes the calculated total LESS than the invoice total. Keep every row. */
- const rows=[];
+ const rows=[], seen=new Set();
  Object.values(byY).forEach(rw=>{
  const codeW = rw.find(w=>ITEM_CODE.test(w.str) && w.x>90 && w.x<130);
  if(!codeW) return;
@@ -1471,6 +1702,8 @@ function parseSAMCOMarkdown(text, words){
  const vat = num(615,645);
  const net = num(672,705);
  if(!qty||!gross) return;
+ const key=codeW.str+'-'+qty+'-'+gross;
+ if(seen.has(key)) return; seen.add(key);
  rows.push({...h,
  item_number : codeW.str,
  description : desc,
@@ -1485,11 +1718,12 @@ function parseSAMCOMarkdown(text, words){
  if(rows.length>0) return rows;
  }
  const TABLE_RE = /\|(\d+)\|([\w.-]+[-\/][\w.-]+|\d{8,})\|(.+?)\|(\w+)\|(\d+)\|([\d.]+)\|([\d.]+)\|[\d.]+\|([\d.]+)\|\d+\s*%?\|([\d.]+)\|([\d.]+)\|/g;
- const rows2=[];
+ const rows2=[], seen2=new Set();
  let m;
  while((m=TABLE_RE.exec(text))!==null){
  const code=m[2],qty=+m[6],gross=+m[8],vat=+m[9],net=+m[10];
- /* keep repeated SKU rows (see note above) — no dedup */
+ const key=code+'-'+qty+'-'+gross;
+ if(seen2.has(key))continue; seen2.add(key);
  rows2.push({...h,item_number:code,description:m[3].replace(/~~|<br>|\*\*/g,'').trim(),
  qty,unit:m[4],unit_price:+m[7],price_ex_vat:gross,vat_amt:vat,total_incl_vat:net});
  }
@@ -1512,41 +1746,48 @@ function parseFarm(lines,text){
 }
 /* Render every page of a PDF to a high-DPI binarised canvas and OCR it
    (eng+ara). Reusable so a digital parse can fall back to OCR for reconciliation. */
+/* ── OCR ENGINE v2 ──────────────────────────────────────────────────────────
+   Scanned Othaim slips carry no Arabic in the table — item codes, quantities
+   and money are pure ASCII. Loading the Arabic model alongside English makes
+   the run slower AND less accurate on digits (the two LSTMs compete over the
+   same glyphs, and RTL reordering scrambles Latin rows next to Arabic text),
+   so the table is read with the English model only. */
 async function ensureOcrWorker(){
  if(OCR_WORKER) return;
- lg(' → تحميل Tesseract (نماذج عالية الدقة eng+ara)...','lam');
+ lg(' → تحميل Tesseract (نموذج عالي الدقة eng)...','lam');
  /* tessdata_best models markedly improve digit/decimal recognition in the
     browser WASM engine vs the default fast models. */
  const best={langPath:'https://tessdata.projectnaptha.com/4.0.0_best',gzip:true,logger:()=>{}};
- try{ OCR_WORKER=await Tesseract.createWorker(['eng','ara'],1,best); }
- catch(e){
-  try{ OCR_WORKER=await Tesseract.createWorker('eng',1,best); }
-  catch(e2){
-   try{ OCR_WORKER=await Tesseract.createWorker(['eng','ara'],1,{logger:()=>{}}); }
-   catch(e3){ OCR_WORKER=await Tesseract.createWorker('eng',1,{logger:()=>{}}); }
-  }
- }
+ try{ OCR_WORKER=await Tesseract.createWorker('eng',1,best); }
+ catch(e){ OCR_WORKER=await Tesseract.createWorker('eng',1,{logger:()=>{}}); }
  try{ await OCR_WORKER.setParameters({
   tessedit_pageseg_mode:'6', preserve_interword_spaces:'1',
-  tessedit_ocr_engine_mode:'1', user_defined_dpi:'300'
+  tessedit_ocr_engine_mode:'1', user_defined_dpi:'300',
+  /* the table is Latin+digits only; forbidding other glyphs stops the engine
+     from "rescuing" a digit as an Arabic or symbol character */
+  tessedit_char_whitelist:'0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,:;-&/\'()% '
  }); }catch(e){}
 }
-/* Render every page to a ~300-DPI canvas (matching the embedded scan resolution
-   rather than over-upscaling) and OCR it. mode 'soft' = LSTM-friendly grayscale,
-   mode 'hard' = high-contrast binarisation; the two recover slightly different
-   lines, so the caller tries both and keeps whichever reconciles to the total. */
-async function renderPdfToOcrText(file, mode){
+/* Render + OCR selected pages. `only` (1-based page numbers) restricts the run
+   to the pages that actually need another look, which is what keeps a second
+   or third pass cheap. Returns an array indexed by page-1 (null = not run). */
+async function renderPdfToOcrPages(file, mode, only){
  await ensureOcrWorker();
  const ab=await file.arrayBuffer();
  const pdf=await pdfjsLib.getDocument({data:ab}).promise;
- let out='';
+ const out=new Array(pdf.numPages).fill(null);
+ const want=only&&only.length?only:null;
+ const label=mode==='ultra'?' (تكبير)':(mode==='hard'?' (تباين عالٍ)':'');
  for(let p=1;p<=pdf.numPages;p++){
-  lg(' → OCR صفحة '+p+'/'+pdf.numPages+(mode==='hard'?' (تباين عالٍ)':''),'lam');
+  if(want&&want.indexOf(p)<0)continue;
+  lg(' → OCR صفحة '+p+'/'+pdf.numPages+label,'lam');
   const page=await pdf.getPage(p);
   const base=page.getViewport({scale:1});
-  /* aim for ~300 DPI (72pt = 1in) without exceeding ~4200px on the long edge */
-  let scale=300/72; const longEdge=Math.max(base.width,base.height)*scale;
-  if(longEdge>4400) scale*=4400/longEdge;
+  /* ~300 DPI normally, ~420 DPI for the rescue pass, capped by canvas size */
+  let scale=(mode==='ultra'?420:300)/72;
+  const cap=mode==='ultra'?5600:4400;
+  const longEdge=Math.max(base.width,base.height)*scale;
+  if(longEdge>cap) scale*=cap/longEdge;
   const vp=page.getViewport({scale});
   const canvas=document.createElement('canvas');
   canvas.width=vp.width;canvas.height=vp.height;
@@ -1558,6 +1799,7 @@ async function renderPdfToOcrText(file, mode){
    const avg=(d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114);
    let val;
    if(mode==='hard'){ val=avg>165?255:(avg<100?0:(avg-100)*255/65); }
+   else if(mode==='ultra'){ val=avg>185?255:(avg<80?0:(avg-80)*255/105); }
    else { /* soft: mild contrast, keep antialiased strokes for the LSTM */
     val=avg>205?255:(avg<95?0:(avg-95)*255/110);
    }
@@ -1565,27 +1807,86 @@ async function renderPdfToOcrText(file, mode){
   }
   ctx.putImageData(id,0,0);
   const {data:{text:t}}=await OCR_WORKER.recognize(canvas);
-  out+=t+'\n';
+  out[p-1]=t;
  }
  return out;
 }
+/* Backwards-compatible whole-document OCR (used by the type probe). */
+async function renderPdfToOcrText(file, mode){
+ const pages=await renderPdfToOcrPages(file,mode);
+ return pages.map(t=>t||'').join('\n');
+}
+/* Trust report — never leave the user guessing. States how many lines were
+   read verbatim, how many had a damaged column rebuilt from the surviving
+   ones, and, when the file still will not balance, exactly how much is
+   unaccounted for. */
+function othaimReport(rows, grandEx, calcEx){
+ const rep=rows.filter(r=>r._conf&&r._conf!=='exact').length;
+ if(rep) lg(' → '+(rows.length-rep)+' سطراً قُرئ حرفياً، '+rep+' سطراً أُعيد بناء عموده التالف من الأعمدة السليمة','lam');
+ if(grandEx>0&&Math.abs(calcEx-grandEx)>0.05)
+  lg(' ⚠ فرق '+r2(grandEx-calcEx)+' ر.س عن إجمالي PDF (صافي '+calcEx+' مقابل '+grandEx+') — يُنصح بمراجعة هذا الملف','ler');
+ else if(grandEx>0) lg(' → مطابق لإجمالي PDF المطبوع ✓','lok');
+}
+/* How many item blocks a page SHOULD yield — every Othaim item ends with its
+   own "Quantity : …" footer, so this counts expected rows independently of
+   whether the money columns parsed. The gap between this and the rows actually
+   produced is what tells us exactly which pages to re-scan. */
+function othaimBlockCount(text){
+ const m=othaimNorm(text||'').match(/Quantity\s*[:;.]/gi);
+ return m?m.length:0;
+}
+/* OCR an Othaim slip and reconcile it against the grand total the PDF itself
+   prints. Pages that came back short are re-scanned — and ONLY those pages —
+   at higher contrast, then at higher resolution, until the file balances. */
+async function othaimOcrReconciled(file, header, seedPages){
+ const sumOf=rs=>r2(rs.reduce((s,r)=>s+(r.price_ex_vat||0),0));
+ let pages=(seedPages&&seedPages.length)?seedPages.slice():await renderPdfToOcrPages(file,'soft');
+ const h=header||othaimHeaderFromText(pages.map(t=>t||'').join('\n'));
+ let per=pages.map(t=>extractOthaimItemsFromText(t||'',h));
+ const flat=()=>pages.map(t=>t||'').join('\n');
+ const allRows=()=>{
+  const byPage=[].concat.apply([],per);
+  /* safety net: a block split across a page break would be invisible to the
+     per-page pass, so the whole-document read competes with it. */
+  const whole=extractOthaimItemsFromText(flat(),h);
+  const g=othaimPdfGrandEx(flat());
+  if(g>0) return Math.abs(sumOf(whole)-g)<Math.abs(sumOf(byPage)-g)?whole:byPage;
+  return whole.length>byPage.length?whole:byPage;
+ };
+ let rows=allRows(), grand=othaimPdfGrandEx(flat());
+ const matched=()=>grand>0&&Math.abs(sumOf(rows)-grand)<=0.05;
+ for(const mode of ['hard','ultra']){
+  if(matched())break;
+  /* a page is suspect when it produced fewer rows than it has item footers */
+  const suspect=[];
+  pages.forEach((t,i)=>{ if(othaimBlockCount(t)>per[i].length)suspect.push(i+1); });
+  const targets=suspect.length?suspect:pages.map((_,i)=>i+1);
+  lg(' → إعادة مسح '+targets.length+' صفحة لاستكمال النواقص...','lam');
+  let rescan;
+  try{ rescan=await renderPdfToOcrPages(file,mode,targets); }catch(e){ break; }
+  targets.forEach(p=>{
+   const i=p-1, t=rescan[i]; if(t==null)return;
+   const cand=extractOthaimItemsFromText(t,h);
+   /* keep the rescan only when it recovers more of that page's blocks */
+   if(cand.length>per[i].length||othaimBlockCount(t)>othaimBlockCount(pages[i])){
+    pages[i]=t; per[i]=cand;
+   }
+  });
+  rows=allRows(); grand=othaimPdfGrandEx(flat());
+ }
+ const diff=grand>0?Math.abs(sumOf(rows)-grand):1e9;
+ return {rows,text:flat(),grandEx:grand,diff,matched:diff<=0.05};
+}
+
+/* Render every page to a ~300-DPI canvas (matching the embedded scan resolution
+   rather than over-upscaling) and OCR it. mode 'soft' = LSTM-friendly grayscale,
+   mode 'hard' = high-contrast binarisation; the two recover slightly different
+   lines, so the caller tries both and keeps whichever reconciles to the total. */
+
 /* OCR an Othaim slip with reconciliation: try soft then (if needed) hard
    preprocessing and return the row-set whose Excl-VAT sum is closest to the
    printed grand total. */
-async function othaimOcrReconciled(file, header){
- const sumOf=rs=>r2(rs.reduce((s,r)=>s+(r.price_ex_vat||0),0));
- let best=null;
- for(const mode of ['soft','hard']){
-  let text; try{ text=await renderPdfToOcrText(file,mode); }catch(e){ continue; }
-  const h=header||othaimHeaderFromText(text);
-  const rows=extractOthaimItemsFromText(text,h);
-  const grandEx=othaimPdfGrandEx(text);
-  const diff=grandEx>0?Math.abs(sumOf(rows)-grandEx):1e9;
-  if(!best||diff<best.diff) best={rows,text,grandEx,diff,matched:diff<=0.05};
-  if(best.matched) break;
- }
- return best||{rows:[],text:'',grandEx:0,diff:1e9,matched:false};
-}
+
 /* ===== Othaim "Return order" format (digital export from Dynamics) =====
    Different layout from PACKING SLIP: ONE amount (Excl-VAT) per line, with VAT
    computed on the document total. Columns per line:
@@ -1684,24 +1985,18 @@ async function processPDF(file){
  if(isScanned&&!knownDigital){
  lg(' → ممسوح ضوئياً — OCR...','lam');
  /* Quick first pass (soft) just to detect the document type. */
- const probe=await renderPdfToOcrText(file,'soft');
+ const probePages=await renderPdfToOcrPages(file,'soft');
+ const probe=probePages.map(t=>t||'').join('\n');
  const u=probe.toUpperCase();
  if(u.includes('PACKING SLIP')){
-  const oc=await othaimOcrReconciled(file, othaimHeaderFromText(probe));
-  /* othaimOcrReconciled re-runs soft internally; reuse probe if it already won */
-  let rows=oc.rows, otext=oc.text;
-  const sumOf=rs=>r2(rs.reduce((s,r)=>s+(r.price_ex_vat||0),0));
-  const probeRows=extractOthaimItemsFromText(probe,othaimHeaderFromText(probe));
-  const probeGrand=othaimPdfGrandEx(probe);
-  if(probeGrand>0 && Math.abs(sumOf(probeRows)-probeGrand) <= (oc.grandEx>0?oc.diff:1e9)){ rows=probeRows; otext=probe; }
-  const g=othaimPdfGrandEx(otext);
-  if(g>0 && Math.abs(sumOf(rows)-g)>0.05)
-   lg(' ⚠ تعذّرت المطابقة الكاملة بالـOCR (صافي '+sumOf(rows)+' مقابل '+g+') — يُنصح بمراجعة هذا الملف','ler');
-  else lg(' → OCR مطابق لإجمالي PDF ✓','lok');
-  return{rows:rows.map(enrichRow),text:otext,ocr:true};
+  /* the probe pass is handed straight to the reconciler, so a scanned slip is
+     never OCR'd twice — only genuinely short pages get another look */
+  const oc=await othaimOcrReconciled(file, othaimHeaderFromText(probe), probePages);
+  othaimReport(oc.rows, oc.grandEx, r2(oc.rows.reduce((s,r)=>s+(r.price_ex_vat||0),0)));
+  return{rows:oc.rows.map(enrichRow),text:oc.text,ocr:true};
  }
  const ocrText=probe;
- const ocrLines=ocrText.split('\n').map((s,i)=>({y:i,words:[{str:s.trim(),x:0,y:i}]})).filter(l=>l.words[0].str);
+const ocrLines=ocrText.split('\n').map((s,i)=>({y:i,words:[{str:s.trim(),x:0,y:i}]})).filter(l=>l.words[0].str);
  if(u.includes('RETURN ORDER')){
   const rr=parseOthaimReturnOrder(ocrText,othaimReturnHeader(ocrText)).map(enrichRow);
   const g=othaimReturnGrandEx(ocrText);const sm=r2(rr.reduce((a,x)=>a+(x.price_ex_vat||0),0));
