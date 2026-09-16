@@ -60,6 +60,12 @@
     <button onclick="resetSKUtoBuiltIn()" style="padding:6px 14px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.35);border-radius:var(--r2);color:#f87171;font-size:12px;cursor:pointer">↺ استرجاع قاعدة SKU الأصلية</button>
     <span style="font-size:10px;color:var(--tx3)">تنسيق Excel: Account / ZREP / Article No / Mars Description / Category / Brand</span>
   </div>
+  <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:1px solid rgba(148,163,184,.15);padding-top:8px">
+    <span style="font-size:11px;color:var(--tx3)">نسخة احتياطية لبياناتك (الأصناف/الأسعار/التحويل/GCN):</span>
+    <button onclick="exportBackupData()" style="padding:6px 14px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:var(--r2);color:#34d399;font-size:12px;cursor:pointer">💾 تصدير نسخة احتياطية</button>
+    <button onclick="document.getElementById('backup-import-input').click()" style="padding:6px 14px;background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.35);border-radius:var(--r2);color:#93c5fd;font-size:12px;cursor:pointer">📥 استرجاع نسخة</button>
+    <input type="file" id="backup-import-input" accept=".json" style="display:none" onchange="if(this.files[0])importBackupData(this.files[0])">
+  </div>
 </div>
 <input type="file" id="sku-file-input" accept=".xlsx,.xls" style="display:none">
 
@@ -102,6 +108,14 @@
 <input type="file" id="ref-gcn-input" accept=".xlsx,.xls" style="display:none">
 
 
+<!-- ADDED: conversion mode toggle -->
+<div class="card" id="mode-toggle-card" style="scroll-margin-top:20px">
+  <div class="clabel">🔀 اختر طريقة التحويل</div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap">
+    <button id="mbtn-pdf" onclick="switchConvMode('pdf')" style="flex:1;min-width:150px;padding:14px;border-radius:var(--r2);border:2px solid var(--ac2);background:linear-gradient(135deg,#1a3c6e,#2563a8);color:#fff;font-weight:700;font-size:14px;cursor:pointer;line-height:1.5">📄 تحويل PDF<br><span style="font-weight:400;font-size:11px;opacity:.85">الطريقة الحالية (بدون أي تغيير)</span></button>
+    <button id="mbtn-oth" onclick="switchConvMode('oth')" style="flex:1;min-width:150px;padding:14px;border-radius:var(--r2);border:2px solid transparent;background:rgba(148,163,184,.12);color:#cbd5e1;font-weight:700;font-size:14px;cursor:pointer;line-height:1.5">📊 تحويل بالمندوب (إكسل + PDF)<br><span style="font-weight:400;font-size:11px;opacity:.85">العثيم إكسل + بقية الأكونتات PDF — مدمج</span></button>
+  </div>
+</div>
 <div class="card" id="cu" style="scroll-margin-top:20px">
   <div class="clabel">01 — رفع ملفات PDF</div>
   <div class="dz" id="dz" onclick="document.getElementById('pi').click()">
@@ -113,6 +127,60 @@
   <input type="file" id="pi" multiple accept=".pdf,.md,.txt,.html,.htm,*">
 <input type="file" id="sku-file-input" accept=".xlsx,.xls" style="display:none">
   <div class="fl" id="fl"></div>
+</div>
+
+<!-- ADDED: multi-account by-salesman conversion card -->
+<div class="card hidden" id="cu_oth" style="scroll-margin-top:20px">
+  <div class="clabel">📊 تحويل بالمندوب — العثيم (إكسل) + بقية الأكونتات (PDF) مدمجين</div>
+  <div style="margin-bottom:12px">
+    <div style="font-size:12px;color:var(--tx3);margin-bottom:6px">1) بيانات المتاجر والمناديب (STORE DATA) — لكل الأكونتات</div>
+    <div class="sm" onclick="document.getElementById('oth-store-input').click()" style="cursor:pointer">
+      <svg viewBox="0 0 24 24" style="width:20px;height:20px"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      <div class="ss_" id="oth-store-status">ارفع STORE_DATA.xlsx (أو سيُستخدم القاموس المدمج)</div>
+      <span class="sc">ارفع الملف ←</span>
+    </div>
+    <input type="file" id="oth-store-input" accept=".xlsx,.xls" style="display:none">
+  </div>
+  <div style="margin-bottom:12px">
+    <div style="font-size:12px;color:var(--tx3);margin-bottom:6px">2) ملف مرتجعات العثيم (إكسل RTV Orders) — اختياري</div>
+    <div class="dz" id="oth-dz" onclick="document.getElementById('oth-excel-input').click()" style="padding:20px">
+      <div class="di"><svg viewBox="0 0 24 24"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg></div>
+      <h3 style="font-size:15px">اسحب ملف إكسل العثيم هنا</h3>
+      <p>ملف RTV Orders من نظام العثيم (‎.xls / .xlsx‎)</p>
+    </div>
+    <input type="file" id="oth-excel-input" accept=".xls,.xlsx,.htm,.html" style="display:none">
+    <div id="oth-excel-status" style="font-size:12px;color:var(--ac2);margin-top:6px"></div>
+  </div>
+  <div style="margin-bottom:12px">
+    <div style="font-size:12px;color:var(--tx3);margin-bottom:6px">3) ملفات PDF لبقية الأكونتات (فارم / بن داود / التميمي / الدانوب) — اختياري</div>
+    <div class="dz" id="oth-pdf-dz" onclick="document.getElementById('oth-pdf-input').click()" style="padding:20px">
+      <div class="di"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
+      <h3 style="font-size:15px">اسحب ملفات PDF هنا</h3>
+      <p>رقمية أو ممسوحة أو ملفات SAMCO النصية — نفس محرّك التحويل الحالي</p>
+    </div>
+    <input type="file" id="oth-pdf-input" multiple accept=".pdf,.md,.txt,.html,.htm,*" style="display:none">
+    <div id="oth-pdf-status" style="font-size:12px;color:var(--ac2);margin-top:6px"></div>
+    <div style="text-align:left;margin-top:4px"><button onclick="othClearPDFs()" style="background:none;border:none;color:#94a3b8;font-size:11px;cursor:pointer;text-decoration:underline">مسح ملفات PDF المضافة</button></div>
+  </div>
+  <div id="oth-period" style="display:none;margin-bottom:12px;background:rgba(15,23,42,.5);border-radius:var(--r2);padding:12px">
+    <div style="font-size:12px;color:var(--tx3);margin-bottom:8px">4) الفلاتر قبل التحويل</div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;font-size:13px;color:#cbd5e1">
+      <label style="cursor:pointer"><input type="radio" name="oth-pmode" value="all" checked onchange="othPModeChange()"> كل الفترة</label>
+      <label style="cursor:pointer"><input type="radio" name="oth-pmode" value="day" onchange="othPModeChange()"> يوم محدد</label>
+      <label style="cursor:pointer"><input type="radio" name="oth-pmode" value="range" onchange="othPModeChange()"> فترة (من–إلى)</label>
+      <label style="cursor:pointer"><input type="radio" name="oth-pmode" value="month" onchange="othPModeChange()"> شهر</label>
+    </div>
+    <div id="oth-period-inputs" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:1px solid rgba(148,163,184,.15);padding-top:8px">
+      <span style="font-size:12px;color:#94a3b8">فلترة بالأكونت:</span>
+      <select id="oth-acct" onchange="othRenderReps()" style="padding:6px 8px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:13px"><option value="__ALL__">كل الأكونتات</option></select>
+    </div>
+  </div>
+  <div id="oth-reps-wrap" style="display:none">
+    <div style="font-size:12px;color:var(--tx3);margin-bottom:8px">5) التحميل — كل المناديب في ملف واحد، أو مندوب بعينه</div>
+    <div id="oth-skip-note" style="font-size:11px;color:#fbbf24;margin-bottom:8px"></div>
+    <div id="oth-reps" style="display:flex;flex-direction:column;gap:8px"></div>
+  </div>
 </div>
 
 <div class="card hidden" id="cst">
@@ -1874,6 +1942,15 @@ async function othaimOcrReconciled(file, header, seedPages){
   });
   rows=allRows(); grand=othaimPdfGrandEx(flat());
  }
+ /* FINAL RESCUE: still not matched -> one full-document ultra re-OCR (every page),
+    adopted only if it lands strictly closer to the printed grand total. */
+ if(grand>0 && Math.abs(sumOf(rows)-grand)>0.05){
+  try{
+   const _full=await renderPdfToOcrPages(file,'ultra');
+   const _fr=extractOthaimItemsFromText(_full.map(t=>t||'').join('\n'),h);
+   if(_fr.length && Math.abs(sumOf(_fr)-grand) < Math.abs(sumOf(rows)-grand)){ rows=_fr; pages=_full; }
+  }catch(e){}
+ }
  const diff=grand>0?Math.abs(sumOf(rows)-grand):1e9;
  return {rows,text:flat(),grandEx:grand,diff,matched:diff<=0.05};
 }
@@ -2383,7 +2460,7 @@ function makeTotalStyle(){
  font:{bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:10},
  alignment:{horizontal:'right',vertical:'center'}};
 }
-async function buildXLSX(rows,stats){
+async function buildXLSX(rows,stats,opts){
  const wb=XLSX.utils.book_new();
  const visibleCols=COLS.filter(c=>c.on);
  const extraHeaders=EXTRA_COLS.filter(c=>c.srcKey).map(c=>({
@@ -2441,6 +2518,7 @@ async function buildXLSX(rows,stats){
  'Account','Customer Code','Salesman','# Items',
  'Excl. VAT (SAR)','VAT (SAR)','Total incl. VAT (SAR)','Excl. VAT — PDF (SAR)','Diff (SAR)'];
  const SC=['1F4E79','1F4E79','1F4E79','375623','375623','375623','375623','375623','375623','843C0C','843C0C','843C0C','843C0C','843C0C','7F1D1D','7F1D1D'];
+ if(opts&&opts.typeCol){SH.push('Type (1+1/Expire)');SC.push('7030A0');}
  const sData=[SH];
  stats.forEach(s=>{
   /* Pass account+isFarm to lk() so Farm 80 doesn't get confused with Othaim 80 (Rafha) */
@@ -2448,7 +2526,9 @@ async function buildXLSX(rows,stats){
   const si=lk(s.store, isFarmStore, s.acct);
   const pdfEx=Number(s.pdfEx)||0;
   const diff=pdfEx?r2(r2(s.ex)-pdfEx):'';
-  sData.push([s.dt,s.rtv,s.po||'',s.store,s.sname||si.name,si.city,si.region||'',s.acct,si.code,si.salesman,s.n,r2(s.ex),r2(s.vat),r2(s.tot),pdfEx||'',diff]);
+  var _srow=[s.dt,s.rtv,s.po||'',s.store,s.sname||si.name,si.city,si.region||'',s.acct,si.code,si.salesman,s.n,r2(s.ex),r2(s.vat),r2(s.tot),pdfEx||'',diff];
+  if(opts&&opts.typeCol)_srow.push(othRtvType(s.rtv));
+  sData.push(_srow);
  });
  sData.push([]);
  const sEx=r2(stats.reduce((x,s)=>x+s.ex,0));
@@ -2461,7 +2541,9 @@ async function buildXLSX(rows,stats){
  const sPdfEx=r2(recRows.reduce((x,s)=>x+(Number(s.pdfEx)||0),0));
  const sExRec=r2(recRows.reduce((x,s)=>x+(Number(s.ex)||0),0));
  const sDiff=r2(recRows.reduce((x,s)=>x+(r2(Number(s.ex)||0)-(Number(s.pdfEx)||0)),0));
- sData.push(['GRAND TOTAL','','','','','','','','','',stats.reduce((x,s)=>x+s.n,0),sEx,sVat,sTot,sPdfEx||'',recRows.length?sDiff:'']);
+ var _gt=['GRAND TOTAL','','','','','','','','','',stats.reduce((x,s)=>x+s.n,0),sEx,sVat,sTot,sPdfEx||'',recRows.length?sDiff:''];
+ if(opts&&opts.typeCol)_gt.push('');
+ sData.push(_gt);
  sData.push([],[' TOTALS BY ACCOUNT']);
  sData.push(['Account','Documents','Items','Excl. VAT','VAT','Total']);
  const ac={};
@@ -3102,6 +3184,410 @@ thead{display:table-header-group}
 </html>`);
  }
 }
+/* ======================================================================
+   ADDED FEATURE — Multi-account RTV conversion BY SALESMAN (rep)
+   Merges Othaim (Excel) + other accounts (PDF/markdown via processPDF)
+   into ONE pool, grouped by rep, with period + account filters.
+   Non-invasive: the existing PDF conversion flow is untouched.
+   Reuses processPDF(), parseSAMCOMarkdown(), lk(), enrichRow(),
+   buildXLSX(), r2(), addToHistory(), normDate(), _NQC_ROWS.
+   ====================================================================== */
+var OTH_ROWS=[];        /* raw Othaim excel rows: {rtv,code,name,qty,ex,site,sname,region,date(iso)} */
+var OTH_MAP=null;       /* siteNum -> {name,city,region,code,salesman} (Othaim only) */
+var OTH_DATES=[];       /* sorted unique 'yyyy-mm-dd' across the whole pool */
+var OTH_EXCEL_POOL=[];  /* full product rows built from the Othaim excel */
+var OTH_PDF_POOL=[];    /* full product rows from PDF / markdown uploads */
+var OTH_SKIP={lines:0,sites:0}; /* excel rows dropped (sites outside your list) */
+function othPool(){return OTH_EXCEL_POOL.concat(OTH_PDF_POOL);}
+
+function switchConvMode(m){
+  var isOth=(m==='oth');
+  var cu=document.getElementById('cu'); if(cu)cu.classList.toggle('hidden',isOth);
+  var oth=document.getElementById('cu_oth'); if(oth)oth.classList.toggle('hidden',!isOth);
+  if(isOth){['cst','cpr','ab'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.add('hidden');});}
+  var cr=document.getElementById('cr'); if(cr)cr.classList.add('hidden');
+  var bp=document.getElementById('mbtn-pdf'), bo=document.getElementById('mbtn-oth');
+  if(bp&&bo){
+    bp.style.background=isOth?'rgba(148,163,184,.12)':'linear-gradient(135deg,#1a3c6e,#2563a8)';
+    bp.style.borderColor=isOth?'transparent':'var(--ac2)';
+    bp.style.color=isOth?'#cbd5e1':'#fff';
+    bo.style.background=isOth?'linear-gradient(135deg,#0f4c75,#1b6ca8)':'rgba(148,163,184,.12)';
+    bo.style.borderColor=isOth?'var(--ac2)':'transparent';
+    bo.style.color=isOth?'#fff':'#cbd5e1';
+  }
+}
+
+/* ---- helpers ---- */
+function othNum(v){if(v==null)return 0;var s=String(v).replace(/,/g,'').replace(/[^\d.\-]/g,'');var n=parseFloat(s);return isNaN(n)?0:n;}
+function othDateISO(s){s=String(s).trim();var m=s.match(/(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/);if(m)return m[1]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[3]).slice(-2);m=s.match(/(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/);if(m)return m[3]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[1]).slice(-2);return '';}
+function othDMY(iso){if(!iso)return'';var p=iso.split('-');return p.length===3?(p[2]+'/'+p[1]+'/'+p[0]):iso;}
+function othRowISO(r){if(r._iso)return r._iso;var d=(typeof normDate==='function')?normDate(r.rtv_date||''):'';return d||'';}
+function othCleanName(s){s=String(s||'').trim();s=s.replace(/^\s*\d+\s*-\s*/,'');s=s.replace(/\s*-\s*(PCS|P\d+)\s*$/i,'');return s.trim();}
+function othFmt(n){return (Math.round((n||0)*100)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function othSetTxt(id,v){var e=document.getElementById(id);if(e)e.textContent=v;}
+var OTH_MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function othFmtDMY(iso){if(!iso)return'';var p=String(iso).split('-');if(p.length!==3)return iso;var d=parseInt(p[2],10),m=parseInt(p[1],10),y=p[0].slice(-2);return (d||p[2])+'-'+(OTH_MONTHS[m-1]||p[1])+'-'+y;}
+/* classify an RTV as 1+1 (promotional) via GCN reference, else Expire */
+function othRtvType(rtv){try{var g=GCN_DB[String(rtv).trim()];if(g==null)g=GCN_DB[rtv];return (g!=null&&String(g).replace(/\s+/g,'')==='1+1')?'1+1':'Expire';}catch(e){return 'Expire';}}
+
+/* ---- STORE DATA -> OTH_MAP + global STORE_COMPOSITE (fixes #80 Othaim/Farm, and gives PDF rows the right rep) ---- */
+function othStoreFromRows(rows){
+  var map={}, comp=(window.STORE_COMPOSITE||{});
+  rows.forEach(function(r){
+    var acct=String(r['Account']||r['account']||'').trim();
+    var sn=parseInt(r['Store#']||r['Store #']||r['store#']||0);
+    if(!sn||!acct)return;
+    var info={name:String(r['Customer_name2']||r['Customer Name']||'').trim(),
+      city:String(r['City']||'').trim(),region:String(r['Region']||r['region']||'').trim(),
+      code:String(r['Customer Code']||r['Customer code']||'').trim(),
+      salesman:String(r['Salsman']||r['Salesman']||r['salesman']||'').trim()};
+    comp[(acct+'_'+sn).toLowerCase()]={a:acct,c:info.code,n:info.name,ci:info.city,rg:info.region,s:info.salesman};
+    if(acct.toLowerCase()==='othaim')map[sn]=info;
+  });
+  window.STORE_COMPOSITE=comp;
+  return map;
+}
+function othLoadStoreData(file){
+  var rd=new FileReader();
+  rd.onload=function(ev){
+    try{
+      var wb=XLSX.read(ev.target.result,{type:'array'});
+      var rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+      OTH_MAP=othStoreFromRows(rows);
+      var el=document.getElementById('oth-store-status');
+      if(el)el.innerHTML='<span style="color:var(--gn)">✓ '+Object.keys(OTH_MAP).length+' متجر عثيم + ربط كل المناديب محمّل</span>';
+      othBuildExcelPool(); othAfterPoolChange();
+    }catch(e){var el=document.getElementById('oth-store-status');if(el)el.textContent='خطأ في ملف المتاجر: '+e.message;}
+  };
+  rd.readAsArrayBuffer(file);
+}
+function othEnsureMap(){
+  if(OTH_MAP&&Object.keys(OTH_MAP).length)return OTH_MAP;
+  var map={};
+  try{Object.keys(DB_COMPOSITE).forEach(function(k){
+    if(k.indexOf('othaim_')===0){var r=DB_COMPOSITE[k];var sn=parseInt(k.split('_')[1]);
+      if(sn)map[sn]={name:r.n||'',city:r.ci||'',region:r.rg||'',code:r.c||'',salesman:(r.s||'').trim()};}
+  });}catch(e){}
+  OTH_MAP=map;return map;
+}
+
+/* ---- parse the Othaim RTV Orders file (HTML-table .xls OR real .xlsx) ---- */
+function othParseAny(buf){
+  var bytes=new Uint8Array(buf), head='';
+  for(var i=0;i<Math.min(bytes.length,300);i++){var c=bytes[i];if(c===0)continue;head+=String.fromCharCode(c);}
+  if(/<\s*(table|tr|td|html|!doctype|meta|body|font)/i.test(head)){return othParseHTMLTable(new TextDecoder('utf-8').decode(buf));}
+  var wb=XLSX.read(buf,{type:'array'});
+  return othRowsFromAOA(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1}));
+}
+function othParseHTMLTable(txt){
+  var doc=new DOMParser().parseFromString(txt,'text/html'), aoa=[];
+  doc.querySelectorAll('tr').forEach(function(tr){
+    var cells=[]; tr.querySelectorAll('td,th').forEach(function(td){cells.push((td.textContent||'').replace(/\s+/g,' ').trim());});
+    if(cells.length)aoa.push(cells);
+  });
+  return othRowsFromAOA(aoa);
+}
+function othRowsFromAOA(aoa){
+  var hIdx=-1;
+  for(var i=0;i<Math.min(aoa.length,12);i++){var j=aoa[i].join('|');if(j.indexOf('رقم المرتجع')>-1&&j.indexOf('الموقع')>-1){hIdx=i;break;}}
+  var col={rtv:0,code:1,name:2,qty:3,ex:4,site:5,sname:6,region:7,date:8};
+  if(hIdx>-1){var H=aoa[hIdx];var find=function(p){for(var k=0;k<H.length;k++){if(p(String(H[k]||'')))return k;}return -1;};var c={};
+    c.rtv=find(function(h){return h.indexOf('رقم المرتجع')>-1;});c.code=find(function(h){return h.indexOf('رقم الصنف')>-1;});
+    c.name=find(function(h){return h==='الصنف'||(h.indexOf('الصنف')>-1&&h.indexOf('رقم')<0);});c.qty=find(function(h){return h.indexOf('الكمية')>-1;});
+    c.ex=find(function(h){return h.indexOf('القيمة')>-1;});c.site=find(function(h){return h.indexOf('رقم الموقع')>-1;});
+    c.sname=find(function(h){return h==='الموقع'||(h.indexOf('الموقع')>-1&&h.indexOf('رقم')<0);});c.region=find(function(h){return h.indexOf('المنطقة')>-1;});
+    c.date=find(function(h){return h.indexOf('تاريخ المرتجع')>-1;});
+    Object.keys(c).forEach(function(k){if(c[k]>-1)col[k]=c[k];});
+  }
+  var start=hIdx>-1?hIdx+1:2, out=[];
+  for(var r=start;r<aoa.length;r++){var row=aoa[r];if(!row||!row.length)continue;
+    var rtv=String(row[col.rtv]||'').trim();
+    if(rtv.indexOf('RTV Orders')>-1||rtv.indexOf('المرتجعات')>-1)continue;
+    var site=parseInt(String(row[col.site]||'').replace(/[^\d]/g,''));
+    if(!rtv&&!site)continue;
+    out.push({rtv:rtv,code:String(row[col.code]||'').trim(),name:String(row[col.name]||'').trim(),
+      qty:othNum(row[col.qty]),ex:othNum(row[col.ex]),site:site||0,
+      sname:String(row[col.sname]||'').trim(),region:String(row[col.region]||'').trim(),
+      date:othDateISO(String(row[col.date]||''))});
+  }
+  return out;
+}
+function othHandleExcel(file){
+  var rd=new FileReader();
+  rd.onload=function(ev){
+    try{
+      OTH_ROWS=othParseAny(ev.target.result);
+      var el=document.getElementById('oth-excel-status');
+      var ds={};OTH_ROWS.forEach(function(r){if(r.date)ds[r.date]=1;});var dd=Object.keys(ds).sort();
+      if(el)el.innerHTML='✓ تم قراءة '+OTH_ROWS.length+' سطر عثيم — '+dd.length+' تاريخ ('+(dd[0]?othDMY(dd[0]):'?')+' ← '+(dd.length?othDMY(dd[dd.length-1]):'?')+')';
+      othEnsureMap(); othBuildExcelPool(); othAfterPoolChange();
+    }catch(e){var el=document.getElementById('oth-excel-status');if(el)el.innerHTML='<span style="color:#f87171">خطأ في قراءة الملف: '+e.message+'</span>';}
+  };
+  rd.readAsArrayBuffer(file);
+}
+function othBuildExcelPool(){
+  othEnsureMap();
+  var out=[], skipLines=0, skipSites={};
+  OTH_ROWS.forEach(function(r){
+    var info=OTH_MAP[r.site];
+    if(!info){skipLines++;skipSites[r.site]=1;return;}
+    var ex=r2(r.ex), qty=r.qty||0;
+    var row={rtv_date:othFmtDMY(r.date),rtv_number:r.rtv,po_number:'',internal_ref:'',
+      store_num:r.site,store_name:info.name,city:info.city,region:info.region,
+      account:'Othaim',customer_code:info.code,salesman:info.salesman||'',
+      item_number:String(r.code||'').trim(),description:othCleanName(r.name),
+      qty:qty,unit:'PCS',unit_price:qty?r2(ex/qty):r2(ex),
+      price_ex_vat:ex,vat_amt:r2(ex*0.15),total_incl_vat:r2(ex*1.15)};
+    if(typeof enrichRow==='function')enrichRow(row);
+    row._iso=r.date||''; row._src='excel'; row._srcFile='__excel__';
+    out.push(row);
+  });
+  OTH_EXCEL_POOL=out;
+  OTH_SKIP={lines:skipLines,sites:Object.keys(skipSites).length};
+}
+
+/* ---- PDF / markdown uploads (reuse the existing engine) ---- */
+async function othParseOnePDF(file){
+  var isPDF=/\.pdf$/i.test(file.name);
+  if(!isPDF){
+    var t=await file.text();
+    return parseSAMCOMarkdown(t,null).map(enrichRow);
+  }
+  var res=await processPDF(file);
+  return (res&&res.rows)?res.rows:[];
+}
+var OTH_SRC_SEQ=0;   /* unique id per physical file upload (so re-uploading the same file counts once) */
+async function othHandlePDFs(fileList){
+  var files=[].slice.call(fileList); if(!files.length)return;
+  var st=document.getElementById('oth-pdf-status');
+  var added=0, ok=0, fail=0;
+  for(var i=0;i<files.length;i++){
+    if(st)st.textContent='جاري قراءة '+(i+1)+'/'+files.length+' — '+files[i].name.slice(0,38);
+    await new Promise(function(r){setTimeout(r,15);});
+    try{
+      var rows=await othParseOnePDF(files[i]);
+      if(rows&&rows.length){var sf='pdf#'+(++OTH_SRC_SEQ)+'#'+files[i].name;rows.forEach(function(r){r._iso=othRowISO(r);r._src='pdf';r._srcFile=sf;OTH_PDF_POOL.push(r);});added+=rows.length;ok++;}
+      else fail++;
+    }catch(e){fail++;}
+  }
+  if(st)st.innerHTML='<span style="color:var(--gn)">✓ أُضيف '+added+' سطر من '+ok+' ملف</span>'+(fail?' <span style="color:#f87171">('+fail+' ملف تعذّر)</span>':'');
+  othAfterPoolChange();
+}
+function othClearPDFs(){OTH_PDF_POOL=[];var st=document.getElementById('oth-pdf-status');if(st)st.textContent='';othAfterPoolChange();}
+
+/* ---- recompute dates + show filters/reps whenever the pool changes ---- */
+function othAfterPoolChange(){
+  var ds={}; othPool().forEach(function(r){var iso=othRowISO(r);if(iso)ds[iso]=1;});
+  OTH_DATES=Object.keys(ds).sort();
+  var hasData=othPool().length>0;
+  var pe=document.getElementById('oth-period'); if(pe)pe.style.display=hasData?'block':'none';
+  var rw=document.getElementById('oth-reps-wrap'); if(rw)rw.style.display=hasData?'block':'none';
+  othBuildPeriodInputs();
+  othRenderReps();
+}
+
+/* ---- period filter ---- */
+function othPModeChange(){othBuildPeriodInputs();othRenderReps();}
+function othBuildPeriodInputs(){
+  var mode=(document.querySelector('input[name=oth-pmode]:checked')||{}).value||'all';
+  var box=document.getElementById('oth-period-inputs'); if(!box)return; box.innerHTML='';
+  var stl='padding:6px 8px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:13px';
+  var opt=function(d){return '<option value="'+d+'">'+othDMY(d)+'</option>';};
+  if(mode==='day'){
+    box.innerHTML='<span style="font-size:12px;color:#94a3b8">التاريخ:</span><select id="oth-day" onchange="othRenderReps()" style="'+stl+'">'+OTH_DATES.map(opt).join('')+'</select>';
+  }else if(mode==='range'){
+    var o=OTH_DATES.map(opt).join('');
+    box.innerHTML='<span style="font-size:12px;color:#94a3b8">من:</span><select id="oth-from" onchange="othRenderReps()" style="'+stl+'">'+o+'</select><span style="font-size:12px;color:#94a3b8">إلى:</span><select id="oth-to" onchange="othRenderReps()" style="'+stl+'">'+o+'</select>';
+    var t=document.getElementById('oth-to'); if(t&&OTH_DATES.length)t.value=OTH_DATES[OTH_DATES.length-1];
+  }else if(mode==='month'){
+    var ms={}; OTH_DATES.forEach(function(d){ms[d.slice(0,7)]=1;}); var months=Object.keys(ms).sort();
+    box.innerHTML='<span style="font-size:12px;color:#94a3b8">الشهر:</span><select id="oth-month" onchange="othRenderReps()" style="'+stl+'">'+months.map(function(m){return '<option value="'+m+'">'+m+'</option>';}).join('')+'</select>';
+  }else{
+    box.innerHTML='<span style="font-size:12px;color:#94a3b8">كل التواريخ ('+OTH_DATES.length+' يوم)</span>';
+  }
+}
+function othInPeriod(iso){
+  var mode=(document.querySelector('input[name=oth-pmode]:checked')||{}).value||'all';
+  if(mode==='all'||!iso)return true;
+  if(mode==='day')return iso===((document.getElementById('oth-day')||{}).value||'');
+  if(mode==='range'){var f=(document.getElementById('oth-from')||{}).value,t=(document.getElementById('oth-to')||{}).value;if(f&&iso<f)return false;if(t&&iso>t)return false;return true;}
+  if(mode==='month')return iso.slice(0,7)===((document.getElementById('oth-month')||{}).value||'');
+  return true;
+}
+
+/* ---- account filter ---- */
+function othSyncAcctOptions(accts){
+  var sel=document.getElementById('oth-acct'); if(!sel)return;
+  var cur=sel.value||'__ALL__';
+  var wanted=['__ALL__'].concat(accts.slice().sort());
+  var sig=wanted.join(','); if(sel._sig===sig)return; sel._sig=sig;
+  sel.innerHTML=wanted.map(function(a){return '<option value="'+a+'">'+(a==='__ALL__'?'كل الأكونتات':a)+'</option>';}).join('');
+  sel.value=(wanted.indexOf(cur)>-1)?cur:'__ALL__';
+}
+function othAcctFilter(){return (document.getElementById('oth-acct')||{}).value||'__ALL__';}
+
+/* ---- period + account filter + DOCUMENT-level dedup ----
+   Keeps every line the export itself contains (so totals match the Othaim/PDF source),
+   but counts each RTV document only ONCE: if the same RTV (rtv+store+account) arrives
+   from two sources (e.g. Excel + a PDF) or the same file is uploaded twice, only the
+   first source's copy is kept. This prevents the doubled total without dropping the
+   legitimate repeated-item lines that a single export normally has. */
+function othFilteredDedup(repKey){
+  var af=othAcctFilter(), filtered=[];
+  othPool().forEach(function(r){
+    if(!othInPeriod(othRowISO(r)))return;
+    if(af!=='__ALL__'&&(r.account||'')!==af)return;
+    if(repKey&&repKey!=='__ALL__'&&(r.salesman||'(بدون مندوب)')!==repKey)return;
+    filtered.push(r);
+  });
+  var firstSrc={}, out=[];
+  filtered.forEach(function(r){
+    var dk=(r.rtv_number||'')+'|'+(r.store_num||'')+'|'+(r.account||'');
+    var sf=r._srcFile||r._src||'?';
+    if(firstSrc[dk]===undefined)firstSrc[dk]=sf;
+    if(firstSrc[dk]===sf)out.push(r);
+  });
+  return out;
+}
+/* ---- render rep buttons (period + account filtered, deduped) ---- */
+function othRenderReps(){
+  var acctSet={};
+  othPool().forEach(function(r){if(othInPeriod(othRowISO(r)))acctSet[r.account||'?']=1;});
+  othSyncAcctOptions(Object.keys(acctSet));
+  var reps={}, allDocs={};
+  othFilteredDedup(null).forEach(function(r){
+    var rep=r.salesman||'(بدون مندوب)';
+    if(!reps[rep])reps[rep]={docs:{},lines:0,ex:0,accts:{}};
+    var dk=(r.rtv_number||'')+'|'+(r.store_num||'')+'|'+(r.account||'');
+    reps[rep].docs[dk]=1; reps[rep].lines++; reps[rep].ex+=(+r.price_ex_vat||0);
+    if(r.account)reps[rep].accts[r.account]=1;
+    allDocs[dk]=1;
+  });
+  var wrap=document.getElementById('oth-reps'); if(!wrap)return; wrap.innerHTML='';
+  var names=Object.keys(reps).sort();
+  if(names.length){
+    var totLines=names.reduce(function(s,k){return s+reps[k].lines;},0);
+    var totEx=names.reduce(function(s,k){return s+reps[k].ex;},0);
+    /* prominent DOWNLOAD-ALL button: every salesman merged into one file, one click */
+    var allBtn=document.createElement('button');
+    allBtn.onclick=function(){othConvertRep('__ALL__','كل المناديب');};
+    allBtn.style.cssText='display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;padding:15px 16px;border-radius:var(--r2);border:2px solid #10b981;background:linear-gradient(135deg,#065f46,#059669);color:#fff;cursor:pointer;text-align:right;box-shadow:0 2px 10px rgba(16,185,129,.25)';
+    allBtn.innerHTML='<span style="font-weight:800;font-size:14px">⬇️ تحميل كل المناديب في ملف واحد</span><span style="font-size:11px;color:#d1fae5;white-space:nowrap">'+names.length+' مندوب · '+Object.keys(allDocs).length+' مرتجع · '+totLines+' سطر · '+othFmt(totEx)+' ر.س</span>';
+    wrap.appendChild(allBtn);
+    var sep=document.createElement('div');
+    sep.style.cssText='text-align:center;color:#64748b;font-size:11px;margin:6px 0';
+    sep.textContent='— أو حمّل تقرير مندوب بعينه —';
+    wrap.appendChild(sep);
+    names.forEach(function(rep){wrap.appendChild(othRepBtn(rep,'👤 '+rep,Object.keys(reps[rep].docs).length,reps[rep].lines,reps[rep].ex,Object.keys(reps[rep].accts).join(' · '),false));});
+  }else{
+    wrap.innerHTML='<div style="color:#94a3b8;font-size:13px;padding:10px;text-align:center">لا توجد بيانات مطابقة للفلاتر الحالية</div>';
+  }
+  var note=document.getElementById('oth-skip-note');
+  if(note)note.innerHTML=OTH_SKIP.lines?('ℹ️ من ملف العثيم: تم استبعاد '+OTH_SKIP.lines+' سطر لمواقع خارج قائمتك ('+OTH_SKIP.sites+' موقع من مناطق أخرى).'):'';
+}
+function othRepBtn(key,label,docN,lines,ex,accts,isAll){
+  var b=document.createElement('button');
+  var name=isAll?'كل المناديب':label.replace(/^\S+\s*/,'');
+  b.onclick=function(){othConvertRep(key,name);};
+  b.style.cssText='display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;padding:12px 14px;border-radius:var(--r2);border:1px solid '+(isAll?'var(--ac2)':'#334155')+';background:'+(isAll?'linear-gradient(135deg,#0f4c75,#1b6ca8)':'#1e293b')+';color:#e2e8f0;cursor:pointer;text-align:right';
+  b.innerHTML='<span style="font-weight:700;font-size:13px">'+label+(accts?' <span style="font-size:10px;color:#94a3b8;font-weight:400">('+accts+')</span>':'')+'</span><span style="font-size:11px;color:#cbd5e1;white-space:nowrap">'+docN+' مرتجع · '+lines+' سطر · '+othFmt(ex)+' ر.س</span>';
+  return b;
+}
+
+/* ---- convert a rep (or all) from the merged pool -> same output pipeline ---- */
+function othConvertRep(repKey,label){
+  var rows=othFilteredDedup(repKey);
+  if(!rows.length){alert('لا توجد بيانات لهذا الاختيار.');return;}
+  var allRows=[], byDoc={};
+  rows.forEach(function(r){
+    var iso=othRowISO(r); if(iso)r.rtv_date=othFmtDMY(iso);   /* date shown as 1-Sep-26 */
+    allRows.push(r);
+    var k=(r.rtv_number||'')+'|'+(r.store_num||'')+'|'+(r.account||'');
+    if(!byDoc[k])byDoc[k]={dt:r.rtv_date,rtv:r.rtv_number,po:r.po_number||'',store:r.store_num,sname:r.store_name,acct:r.account,n:0,ex:0,vat:0,tot:0,pdfEx:0};
+    byDoc[k].n++; byDoc[k].ex=r2(byDoc[k].ex+(+r.price_ex_vat||0)); byDoc[k].vat=r2(byDoc[k].vat+(+r.vat_amt||0)); byDoc[k].tot=r2(byDoc[k].tot+(+r.total_incl_vat||0));
+  });
+  var stats=Object.keys(byDoc).map(function(k){return byDoc[k];});
+  var af=othAcctFilter();
+  var lbl=label+(af!=='__ALL__'?(' · '+af):'');
+  othFinish(allRows,stats,lbl);
+}
+async function othFinish(allRows,stats,label){
+  var url=await buildXLSX(allRows,stats,{typeCol:true});   /* typeCol adds the 1+1/Expire column to the Summary sheet */
+  var now=Date.now(); allRows.forEach(function(r){r._savedAt=now;});
+  try{localStorage.setItem('mars_rtv_rows_v2',JSON.stringify(allRows));}catch(e){}
+  window._NQC_ROWS=allRows;
+  var cr=document.getElementById('cr'); if(cr)cr.classList.remove('hidden');
+  var nb=document.getElementById('nqc-btn'); if(nb)nb.style.display='flex';
+  var pb=document.getElementById('pdf-btn'); if(pb)pb.style.display='flex';
+  var ob=document.getElementById('orig-pdf-btn'); if(ob)ob.style.display='none';
+  othSetTxt('sd',stats.length);
+  var items=stats.reduce(function(s,st){return s+st.n;},0);
+  othSetTxt('si_',items);
+  othSetTxt('sa',new Set(stats.map(function(s){return s.acct;}).filter(Boolean)).size);
+  othSetTxt('rd_',allRows.length+' سطر منتج من '+stats.length+' مرتجع — '+label);
+  var vs=document.getElementById('vs'); if(vs)vs.innerHTML='<span style="color:var(--gn)">✅ تحويل بالمندوب: '+label+'</span>';
+  var dl=document.getElementById('dl');
+  if(dl){dl.href=url;var d=new Date().toISOString().slice(0,10);var safe=String(label||'RTV').replace(/[^0-9A-Za-z؀-ۿ]+/g,'_');dl.download='RTV_'+safe+'_'+d+'.xlsx';}
+  try{
+    var d2=new Date().toISOString().slice(0,10);
+    var stnames=Array.from(new Set(allRows.map(function(r){return r.store_name;}).filter(Boolean))).join(', ');
+    var exSum=allRows.reduce(function(s,r){return s+(+r.price_ex_vat||0);},0).toFixed(2);
+    var rtvList=stats.map(function(s){return {rtv:s.rtv,store:s.sname,items:s.n,exvat:s.ex,pdfExvat:0,date:s.dt};});
+    if(typeof addToHistory==='function')addToHistory({date:d2,filename:dl?dl.download:'RTV.xlsx',stores:stnames,items:items,exvat:exSum,rtvList:rtvList,xlsxUrl:url});
+    var hb=document.getElementById('history-btn'); if(hb)hb.style.display='block';
+  }catch(e){}
+  if(cr)cr.scrollIntoView({behavior:'smooth'});
+}
+
+/* ---- localStorage backup export/import (protect the user's added data) ---- */
+function exportBackupData(){
+  var keys=['mars_rtv_sku_db','mars_rtv_price_db','mars_rtv_conv_db','mars_rtv_gcn_db'];
+  var out={}, s='';
+  keys.forEach(function(k){var v=localStorage.getItem(k);if(v){try{out[k]=JSON.parse(v);}catch(e){out[k]=v;}}});
+  if(out.mars_rtv_sku_db){var d=out.mars_rtv_sku_db;Object.keys(d).forEach(function(a){s+='أصناف '+a+': '+Object.keys(d[a]).length+'\n';});}
+  ['mars_rtv_price_db','mars_rtv_conv_db','mars_rtv_gcn_db'].forEach(function(k){if(out[k])s+=k+': '+Object.keys(out[k]).length+'\n';});
+  var b=new Blob([JSON.stringify(out)],{type:'application/json'});
+  var a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download='mars_rtv_backup_'+new Date().toISOString().slice(0,10)+'.json';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  alert('✅ تم تنزيل نسخة احتياطية من بياناتك.\n\n'+(s||'(لا توجد بيانات مضافة بعد)'));
+}
+function importBackupData(file){
+  var rd=new FileReader();
+  rd.onload=function(ev){
+    try{
+      var obj=JSON.parse(ev.target.result), n=0;
+      Object.keys(obj).forEach(function(k){if(/^mars_rtv_/.test(k)){localStorage.setItem(k,typeof obj[k]==='string'?obj[k]:JSON.stringify(obj[k]));n++;}});
+      alert('✅ تم استرجاع '+n+' قاعدة بيانات. سيتم إعادة تحميل الصفحة.'); location.reload();
+    }catch(e){alert('ملف غير صالح: '+e.message);}
+  };
+  rd.readAsText(file);
+}
+
+/* ---- wire up inputs ---- */
+(function othInit(){
+  function bind(){
+    var se=document.getElementById('oth-store-input');
+    if(se&&!se._wired){se._wired=1;se.addEventListener('change',function(e){if(e.target.files[0])othLoadStoreData(e.target.files[0]);});}
+    var ee=document.getElementById('oth-excel-input');
+    if(ee&&!ee._wired){ee._wired=1;ee.addEventListener('change',function(e){if(e.target.files[0])othHandleExcel(e.target.files[0]);});}
+    var pe=document.getElementById('oth-pdf-input');
+    if(pe&&!pe._wired){pe._wired=1;pe.addEventListener('change',function(e){if(e.target.files.length)othHandlePDFs(e.target.files);e.target.value='';});}
+    var dz=document.getElementById('oth-dz');
+    if(dz&&!dz._wired){dz._wired=1;
+      dz.addEventListener('dragover',function(e){e.preventDefault();e.stopPropagation();dz.classList.add('drag');});
+      dz.addEventListener('dragleave',function(){dz.classList.remove('drag');});
+      dz.addEventListener('drop',function(e){e.preventDefault();e.stopPropagation();dz.classList.remove('drag');if(e.dataTransfer.files[0])othHandleExcel(e.dataTransfer.files[0]);});
+    }
+    var pz=document.getElementById('oth-pdf-dz');
+    if(pz&&!pz._wired){pz._wired=1;
+      pz.addEventListener('dragover',function(e){e.preventDefault();e.stopPropagation();pz.classList.add('drag');});
+      pz.addEventListener('dragleave',function(){pz.classList.remove('drag');});
+      pz.addEventListener('drop',function(e){e.preventDefault();e.stopPropagation();pz.classList.remove('drag');if(e.dataTransfer.files.length)othHandlePDFs(e.dataTransfer.files);});
+    }
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind); else bind();
+})();
+
 function reset_(){
  FILES=[];STORE=null;
  $('fl').innerHTML='';$('lb').innerHTML='';
