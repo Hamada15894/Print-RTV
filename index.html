@@ -276,7 +276,8 @@ function saveSKUDB(){
  try{
  localStorage.setItem(SKU_STORAGE_KEY, JSON.stringify(SKU_DB));
  console.log('SKU DB saved ✅');
- }catch(e){ console.log('SKU save error:', e); }
+ return true;
+ }catch(e){ console.log('SKU save error:', e); return false; }
 }
 function loadSKUDB(){
  try{
@@ -496,15 +497,15 @@ function handleSKUUpload(input, account){
     E.g. user clicks "BinDawood" tile and the Excel has Account="Bindawood " (with space)
     → we store under "BinDawood" so PDF parsing (which emits "BinDawood") matches. */
  SKU_DB[account] = newData;
- saveSKUDB();
+ const _skuOK = saveSKUDB();
  /* Update the live count next to the account row immediately */
  const countEl = document.getElementById('sku-count-'+account);
  if(countEl) countEl.textContent = Object.keys(newData).length + ' صنف مُحمَّل';
  /* Show a green confirmation message that fades out */
  const grid = document.getElementById('sku-account-grid');
  const msg = document.createElement('div');
- msg.style.cssText='padding:10px 14px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:6px;color:#22c55e;font-size:12px;margin-top:6px';
- msg.textContent = '✅ تم تحديث ' + Object.keys(newData).length + ' صنف لحساب ' + account + ' — التحديث فوري ومحفوظ';
+ msg.style.cssText='padding:10px 14px;border-radius:6px;font-size:12px;margin-top:6px;'+(_skuOK?'background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);color:#22c55e':'background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.4);color:#fca5a5');
+ msg.textContent = _skuOK ? ('✅ تم تحديث ' + Object.keys(newData).length + ' صنف لحساب ' + account + ' — محفوظ داخل المتصفح ✓') : ('⚠ تم التحديث لكن تعذّر الحفظ الدائم — إن كنت تفتح الملف محليًا فاستخدم اللينك، أو استخدم زر «تصدير نسخة احتياطية»');
  grid.appendChild(msg);
  setTimeout(()=>msg.remove(), 4000);
  /* If conversion was already done, re-enrich the rows in-place so the UI reflects new SKU mappings */
@@ -1670,7 +1671,7 @@ function parseTamimi(lines,text){
  /* numbers may carry a thousands separator (e.g. "1,570.80"); strip commas
     before converting so large line items are not dropped by the regex. */
  const num=s=>parseFloat(String(s).replace(/,/g,''))||0;
- const UOM='EA|PAC|PCS|PC|CAS|CS|BOX|CTN|BAG|SET|DZ|KG';
+ const UOM='[A-Za-z]{1,6}';  /* accept ANY unit (EA/PAC/ZM/CAR/BOX/...) so no line is ever dropped */
  /* strict: full row incl. cost-center column; lenient: cost-center optional,
     flexible spacing around "Per" and "%". Both accept thousands commas. */
  const RE_STRICT =new RegExp('^(\\d{6})\\s+(.+?)\\s+([\\d.,]+)\\s+('+UOM+')\\s+([\\d.,]+)\\s+Per\\s+(?:'+UOM+')\\s+([\\d.,]+)\\s+(\\d+)\\s*%\\s+([\\d.,]+)\\s+\\S+\\s*$');
