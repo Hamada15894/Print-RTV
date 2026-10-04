@@ -409,6 +409,9 @@ function lookupSKU(account, articleNo) {
  const acct = SKU_DB[account];
  if(acct){
  for(const k of keys){ if(acct[k]) return acct[k]; }
+ /* each retailer has its own article numbering: if this account has its own table,
+    do NOT borrow a same-number item from another account (wrong ZREP/description) */
+ if(Object.keys(acct).length) return null;
  }
  for(const a of Object.values(SKU_DB)){
  for(const k of keys){ if(a[k]) return a[k]; }
@@ -746,6 +749,7 @@ var FILES=[],STORE=null,OCR_WORKER=null;
 const DEF_COLS=[
  {key:'rtv_date', label:'RTV Date', color:'1F4E79', on:true},
  {key:'rtv_number', label:'RTV / Ref #', color:'1F4E79', on:true},
+ {key:'rtv_type', label:'RTV Type', color:'7030A0', on:true},
  {key:'po_number', label:'PO Number', color:'1F4E79', on:true},
  {key:'internal_ref', label:'Internal Ref', color:'1F4E79', on:true},
  {key:'store_num', label:'Store #', color:'375623', on:true},
@@ -869,6 +873,7 @@ const DB={
  431:{a:'Othaim',c:'17585260',n:'55424 Othaim - 431 Omar Ibn Al-Khat',ci:'Hail',rg:'North',s:'Sarsik'},
  434:{a:'Othaim',c:'17632444',n:'52358 434-OTHAIM-BURIDAH',ci:'Buraida',rg:'North',s:'Mostafa'},
  439:{a:'Othaim',c:'17598308',n:'39912 2182 Al Ghurub, As Safaa, Haf',ci:'Hafer Al Batin',rg:'North',s:'Jamal'},
+ 468:{a:'Othaim',c:'17689278',n:'468-OTH Buraida Cash & Carry',ci:'Buraida',rg:'North',s:'Mostafa'},
  462:{a:'Othaim',c:'17605534',n:'55471 HALAB AGA، HAEL 55471، KSA',ci:'Hail',rg:'North',s:'Sarsik'},
  478:{a:'Othaim',c:'17612150',n:'73311 OTHAIM , ARAR',ci:'Arar',rg:'North',s:'Ossama'},
  480:{a:'Othaim',c:'17611674',n:'52315 OTHAIM,BURIDAH',ci:'Buraida',rg:'North',s:'Mostafa'},
@@ -952,6 +957,7 @@ const DB_COMPOSITE={
  'othaim_431':{a:'Othaim',c:'17585260',n:'55424 Othaim - 431 Omar Ibn Al-Khat',ci:'Hail',rg:'North',s:'Sarsik'},
  'othaim_434':{a:'Othaim',c:'17632444',n:'52358 434-OTHAIM-BURIDAH',ci:'Buraida',rg:'North',s:'Mostafa'},
  'othaim_439':{a:'Othaim',c:'17598308',n:'39912 2182 Al Ghurub, As Safaa, Haf',ci:'Hafer Al Batin',rg:'North',s:'Jamal'},
+ 'othaim_468':{a:'Othaim',c:'17689278',n:'468-OTH Buraida Cash & Carry',ci:'Buraida',rg:'North',s:'Mostafa'},
  'othaim_462':{a:'Othaim',c:'17605534',n:'55471 HALAB AGA، HAEL 55471، KSA',ci:'Hail',rg:'North',s:'Sarsik'},
  'othaim_478':{a:'Othaim',c:'17612150',n:'73311 OTHAIM , ARAR',ci:'Arar',rg:'North',s:'Ossama'},
  'othaim_480':{a:'Othaim',c:'17611674',n:'52315 OTHAIM,BURIDAH',ci:'Buraida',rg:'North',s:'Mostafa'},
@@ -985,7 +991,7 @@ function lk(n,isFarm,acct){
  const entries=Object.values(db).filter(r=>(r.a||'').toLowerCase()===acct.toLowerCase());
  if(entries.length===1)return mksi(entries[0]);
  }
- return {account:acct||'',code:'',name:'',city:'',region:'',salesman:''};
+ return {account:acct||'',code:'',name:(!isNaN(snum)&&snum)?((acct?acct+' ':'')+'Store '+snum):'',city:'',region:'',salesman:''};
 }
 function mksi(r){
  const o={account:r.a||r.account||'',code:r.c||r.code||'',name:r.n||r.name||'',city:r.ci||r.city||'',region:r.rg||r.region||'',salesman:r.s||r.salesman||''};
@@ -2461,111 +2467,147 @@ function makeTotalStyle(){
  font:{bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:10},
  alignment:{horizontal:'right',vertical:'center'}};
 }
+/* shared styles */
+const NF_MONEY='#,##0.00', NF_QTY='#,##0', NF_UNIT='#,##0.00####';
+function _bx(c){return{top:{style:'thin',color:{rgb:c}},bottom:{style:'thin',color:{rgb:c}},left:{style:'thin',color:{rgb:c}},right:{style:'thin',color:{rgb:c}}};}
+function _cellStyle(numFmt,alt){const o={font:{name:'Arial',sz:10},alignment:{vertical:'center'},border:_bx('D9D9D9')};if(numFmt){o.numFmt=numFmt;o.alignment.horizontal='right';}if(alt)o.fill={patternType:'solid',fgColor:{rgb:'F3F7FC'}};return o;}
+/* top KPI band: totals that follow the filter (SUBTOTAL ignores hidden rows) */
+function _bandStyle(numFmt,isLabel){const o={fill:{patternType:'solid',fgColor:{rgb:'FFF2CC'}},font:{bold:true,color:{rgb:isLabel?'1F3864':'C00000'},name:'Arial',sz:12},
+ alignment:{horizontal:isLabel?'center':'right',vertical:'center'},border:{top:{style:'medium',color:{rgb:'BF9000'}},bottom:{style:'medium',color:{rgb:'BF9000'}},left:{style:'thin',color:{rgb:'FFE699'}},right:{style:'thin',color:{rgb:'FFE699'}}}};
+ if(numFmt)o.numFmt=numFmt;return o;}
+function _bandEmpty(){return{fill:{patternType:'solid',fgColor:{rgb:'FFF2CC'}},border:{top:{style:'medium',color:{rgb:'BF9000'}},bottom:{style:'medium',color:{rgb:'BF9000'}}}};}
+/* put a live SUBTOTAL in a cell, with the full total cached so it shows instantly */
+function _sub(ws,r,c,fn,col,r1,r2_,cached,style){
+ const L=XLSX.utils.encode_col(col);
+ ws[XLSX.utils.encode_cell({r,c})]={t:'n',v:cached,f:'SUBTOTAL('+fn+','+L+(r1+1)+':'+L+(r2_+1)+')',s:style};
+}
+function _txt(ws,r,c,v,style){ws[XLSX.utils.encode_cell({r,c})]={t:'s',v:v,s:style};}
 async function buildXLSX(rows,stats,opts){
  const wb=XLSX.utils.book_new();
- const visibleCols=COLS.filter(c=>c.on);
- const extraHeaders=EXTRA_COLS.filter(c=>c.srcKey).map(c=>({
- key:'x_'+c.srcKey, label:c.outLabel||c.srcKey, color:'375623'
- }));
- const allCols=[...visibleCols,...extraHeaders];
- const headers=allCols.map(c=>c.label);
- const dData=[headers];
- rows.forEach(r=>dData.push(allCols.map(c=>r[c.key]??'')));
- const totEx =r2(rows.reduce((s,r)=>s+(r.price_ex_vat||0),0));
- const totVat=r2(rows.reduce((s,r)=>s+(r.vat_amt||0),0));
- const totTot=r2(rows.reduce((s,r)=>s+(r.total_incl_vat||0),0));
- dData.push([]);
- const totRow=new Array(allCols.length).fill('');
- const exIdx=allCols.findIndex(c=>c.key==='price_ex_vat');
- const vatIdx=allCols.findIndex(c=>c.key==='vat_amt');
- const totIdx=allCols.findIndex(c=>c.key==='total_incl_vat');
- const descIdx=allCols.findIndex(c=>c.key==='description');
- if(descIdx>=0)totRow[descIdx]='GRAND TOTAL';
- if(exIdx>=0)totRow[exIdx]=totEx;
- if(vatIdx>=0)totRow[vatIdx]=totVat;
- if(totIdx>=0)totRow[totIdx]=totTot;
- dData.push(totRow);
- const wsD=XLSX.utils.aoa_to_sheet(dData);
- /* Auto-fit columns: compute width = max(header label, max cell length) * factor
-    Falls back to a sensible minimum/maximum to keep the sheet readable */
- wsD['!cols']=allCols.map((c,ci)=>{
-  const wMap={rtv_date:13,rtv_number:16,po_number:15,internal_ref:20,store_num:9,
-   store_name:36,city:14,region:12,account:10,customer_code:14,salesman:12,
-   item_number:14,description:48,qty:7,unit:7,unit_price:13,
-   price_ex_vat:14,vat_amt:12,total_incl_vat:14};
-  /* Measure actual content width in this column */
-  let maxLen=String(c.label||'').length;
-  for(let ri=1;ri<dData.length;ri++){
-   const cell=dData[ri][ci];
-   if(cell==null)continue;
-   const s=typeof cell==='number'?cell.toFixed(2):String(cell);
-   if(s.length>maxLen)maxLen=s.length;
-  }
-  /* Add small padding; clamp between 7 and 60 */
-  const calc=Math.min(60,Math.max(7,maxLen+2));
-  /* Take the larger of the curated map width and the measured width */
-  return{wch:Math.max(wMap[c.key]||14,calc)};
- });
- allCols.forEach((col,ci)=>{
- styleCell(wsD,0,ci,makeHdrStyle(col.color||'1F4E79'));
- });
- const gtRowIdx=dData.length-1;
- for(let ci=0;ci<allCols.length;ci++){
- const ref=XLSX.utils.encode_cell({r:gtRowIdx,c:ci});
- if(wsD[ref])wsD[ref].s=makeTotalStyle();
+ wb.Workbook={CalcPr:{fullCalcOnLoad:true}};
+ const TYPES=rtvTypeMap(rows);
+ let visibleCols=COLS.filter(c=>c.on);
+ if(!COLS.some(c=>c.key==='rtv_type')){
+  const i=visibleCols.findIndex(c=>c.key==='rtv_number');
+  visibleCols.splice(i>=0?i+1:0,0,{key:'rtv_type',label:'RTV Type',color:'7030A0',on:true});
  }
+ const extraHeaders=EXTRA_COLS.filter(c=>c.srcKey).map(c=>({key:'x_'+c.srcKey,label:c.outLabel||c.srcKey,color:'375623'}));
+ const allCols=[...visibleCols,...extraHeaders];
+ const MONEY=new Set(['price_ex_vat','vat_amt','total_incl_vat']);
+ const nfOf=k=>MONEY.has(k)?NF_MONEY:(k==='qty'?NF_QTY:(k==='unit_price'?NF_UNIT:null));
+ const totQty=r2(rows.reduce((s,r)=>s+(Number(r.qty)||0),0));
+ const totEx =r2(rows.reduce((s,r)=>s+(Number(r.price_ex_vat)||0),0));
+ const totVat=r2(rows.reduce((s,r)=>s+(Number(r.vat_amt)||0),0));
+ const totTot=r2(rows.reduce((s,r)=>s+(Number(r.total_incl_vat)||0),0));
+
+ /* ===================== RTV LINE DETAILS =====================
+    row 1 = live totals band, row 2 = headers, data from row 3 */
+ const dData=[new Array(allCols.length).fill(''),allCols.map(c=>c.label)];
+ rows.forEach(r=>dData.push(allCols.map(c=>{const v=r[c.key];return v==null?'':v;})));
+ const wsD=XLSX.utils.aoa_to_sheet(dData);
+ const D0=2, D1=Math.max(2,dData.length-1);
+ const idx=k=>allCols.findIndex(c=>c.key===k);
+ allCols.forEach((col,ci)=>styleCell(wsD,1,ci,makeHdrStyle(col.color||'1F4E79')));
+ for(let ri=D0;ri<=D1&&ri<dData.length;ri++)allCols.forEach((col,ci)=>{const ref=XLSX.utils.encode_cell({r:ri,c:ci});if(wsD[ref])wsD[ref].s=_cellStyle(nfOf(col.key),ri%2===1);});
+ allCols.forEach((c,ci)=>styleCell(wsD,0,ci,_bandEmpty()));
+ const sums={qty:totQty,price_ex_vat:totEx,vat_amt:totVat,total_incl_vat:totTot};
+ Object.keys(sums).forEach(k=>{const i=idx(k);if(i>=0)_sub(wsD,0,i,109,i,D0,D1,sums[k],_bandStyle(nfOf(k)));});
+ const firstNum=['qty','unit_price','price_ex_vat'].map(idx).filter(i=>i>=0).sort((a,b)=>a-b)[0]||1;
+ _txt(wsD,0,firstNum-1,'TOTAL ▸',_bandStyle(null,true));
+ const cntCol=idx('rtv_number')>=0?idx('rtv_number'):0;
+ _sub(wsD,0,0,103,cntCol,D0,D1,rows.length,_bandStyle('0" lines"',true));
+ wsD['!cols']=allCols.map((c,ci)=>{
+  const wMap={rtv_date:12,rtv_number:15,rtv_type:10,po_number:12,internal_ref:12,store_num:8,
+   store_name:30,city:13,region:9,account:9,customer_code:13,salesman:12,
+   item_number:11,description:40,qty:11,unit:6,unit_price:12,price_ex_vat:15,vat_amt:14,total_incl_vat:15};
+  let maxLen=String(c.label||'').length;
+  for(let ri=2;ri<dData.length;ri++){const cell=dData[ri][ci];if(cell==null||cell==='')continue;
+   const s=typeof cell==='number'?cell.toLocaleString('en-US',{minimumFractionDigits:2}):String(cell);if(s.length>maxLen)maxLen=s.length;}
+  return{wch:Math.max(wMap[c.key]||10,Math.min(55,maxLen+2))};
+ });
+ wsD['!rows']=[{hpt:26},{hpt:30}];
+ wsD['!autofilter']={ref:XLSX.utils.encode_range({s:{r:1,c:0},e:{r:D1,c:allCols.length-1}})};
  XLSX.utils.book_append_sheet(wb,wsD,'RTV Line Details');
- const SH=['RTV Date','RTV / Ref #','PO Number','Store #','Store Name','City','Region',
- 'Account','Customer Code','Salesman','# Items',
+
+ /* ===================== SUMMARY ===================== */
+ const SH=['RTV Date','RTV / Ref #','RTV Type','PO Number','Store #','Store Name','City','Region',
+ 'Account','Customer Code','Salesman','# Lines','Qty (Pcs)',
  'Excl. VAT (SAR)','VAT (SAR)','Total incl. VAT (SAR)','Excl. VAT — PDF (SAR)','Diff (SAR)'];
- const SC=['1F4E79','1F4E79','1F4E79','375623','375623','375623','375623','375623','375623','843C0C','843C0C','843C0C','843C0C','843C0C','7F1D1D','7F1D1D'];
- if(opts&&opts.typeCol){SH.push('Type (1+1/Expire)');SC.push('7030A0');}
- const sData=[SH];
+ const SC=['1F4E79','1F4E79','7030A0','1F4E79','375623','375623','375623','375623','375623','375623','375623','843C0C','843C0C','843C0C','843C0C','843C0C','7F1D1D','7F1D1D'];
+ const NUMC={11:NF_QTY,12:NF_QTY,13:NF_MONEY,14:NF_MONEY,15:NF_MONEY,16:NF_MONEY,17:NF_MONEY};
+ const qtyByDoc={};
+ rows.forEach(r=>{const k=String(r.rtv_number||'')+'|'+String(r.store_num||'');qtyByDoc[k]=(qtyByDoc[k]||0)+(Number(r.qty)||0);});
+ const sData=[new Array(SH.length).fill(''),SH], docInfo=[];
  stats.forEach(s=>{
-  /* Pass account+isFarm to lk() so Farm 80 doesn't get confused with Othaim 80 (Rafha) */
-  const isFarmStore = (s.acct||'').toLowerCase()==='farm';
-  const si=lk(s.store, isFarmStore, s.acct);
+  const isFarmStore=(s.acct||'').toLowerCase()==='farm';
+  const si=lk(s.store,isFarmStore,s.acct);
+  const r0=rows.find(r=>String(r.rtv_number)===String(s.rtv)&&String(r.store_num)===String(s.store))||{};
   const pdfEx=Number(s.pdfEx)||0;
   const diff=pdfEx?r2(r2(s.ex)-pdfEx):'';
-  var _srow=[s.dt,s.rtv,s.po||'',s.store,s.sname||si.name,si.city,si.region||'',s.acct,si.code,si.salesman,s.n,r2(s.ex),r2(s.vat),r2(s.tot),pdfEx||'',diff];
-  if(opts&&opts.typeCol)_srow.push(othRtvType(s.rtv));
-  sData.push(_srow);
+  const q=r2(qtyByDoc[String(s.rtv||'')+'|'+String(s.store||'')]||0);
+  const typ=TYPES[String(s.rtv||'')]||'Expired';
+  const sales=(r0.salesman||si.salesman||'').trim();
+  sData.push([s.dt||r0.rtv_date||'',String(s.rtv||''),typ,s.po||'',s.store,s.sname||r0.store_name||si.name,r0.city||si.city,r0.region||si.region||'',
+   s.acct,r0.customer_code||si.code,sales,s.n,q,r2(s.ex),r2(s.vat),r2(s.tot),pdfEx||'',diff]);
+  docInfo.push({acct:s.acct||'Unknown',type:typ,rep:sales||'(No salesman)',n:s.n,q:q,e:s.ex,v:s.vat,t:s.tot});
  });
- sData.push([]);
+ const S0=2, S1=Math.max(2,sData.length-1);
+ const nDocs=stats.length;
+ const sLines=stats.reduce((x,s)=>x+s.n,0);
+ const sQty=r2(docInfo.reduce((x,d)=>x+d.q,0));
  const sEx=r2(stats.reduce((x,s)=>x+s.ex,0));
  const sVat=r2(stats.reduce((x,s)=>x+s.vat,0));
  const sTot=r2(stats.reduce((x,s)=>x+s.tot,0));
- /* Reconciliation totals: ONLY sum over rows that actually have a PDF total,
-    and sum the per-row diffs directly so the grand-total Diff matches the
-    column above it (no "total migration"). */
  const recRows=stats.filter(s=>(Number(s.pdfEx)||0)>0);
  const sPdfEx=r2(recRows.reduce((x,s)=>x+(Number(s.pdfEx)||0),0));
- const sExRec=r2(recRows.reduce((x,s)=>x+(Number(s.ex)||0),0));
  const sDiff=r2(recRows.reduce((x,s)=>x+(r2(Number(s.ex)||0)-(Number(s.pdfEx)||0)),0));
- var _gt=['GRAND TOTAL','','','','','','','','','',stats.reduce((x,s)=>x+s.n,0),sEx,sVat,sTot,sPdfEx||'',recRows.length?sDiff:''];
- if(opts&&opts.typeCol)_gt.push('');
- sData.push(_gt);
- sData.push([],[' TOTALS BY ACCOUNT']);
- sData.push(['Account','Documents','Items','Excl. VAT','VAT','Total']);
- const ac={};
- stats.forEach(s=>{const a=s.acct||'Unknown';if(!ac[a])ac[a]={d:0,i:0,e:0,v:0,t:0};
- ac[a].d++;ac[a].i+=s.n;ac[a].e+=s.ex;ac[a].v+=s.vat;ac[a].t+=s.tot;});
- Object.entries(ac).sort().forEach(([a,d])=>sData.push([a,d.d,d.i,r2(d.e),r2(d.v),r2(d.t)]));
- sData.push(['TOTAL ALL','','',stats.reduce((x,s)=>x+s.n,0),sEx,sVat,sTot]);
+ /* compact breakdown under the table — numbers sit under the same numeric columns */
+ const BC=9; /* name column (Customer Code col) */
+ const blocks=[];
+ function block(title,keyFn){
+  const g={};docInfo.forEach(d=>{const k=keyFn(d);if(!g[k])g[k]={d:0,i:0,q:0,e:0,v:0,t:0};g[k].d++;g[k].i+=d.n;g[k].q+=d.q;g[k].e+=d.e;g[k].v+=d.v;g[k].t+=d.t;});
+  sData.push([]);
+  const hRow=sData.length; const h=new Array(SH.length).fill('');
+  h[BC]=title;h[BC+1]='RTVs';h[BC+2]='Lines';h[BC+3]='Qty (Pcs)';h[BC+4]='Excl. VAT';h[BC+5]='VAT';h[BC+6]='Total incl. VAT';sData.push(h);
+  const first=sData.length;
+  Object.keys(g).sort().forEach(k=>{const x=g[k];const row=new Array(SH.length).fill('');row[BC]=k;row[BC+1]=x.d;row[BC+2]=x.i;row[BC+3]=r2(x.q);row[BC+4]=r2(x.e);row[BC+5]=r2(x.v);row[BC+6]=r2(x.t);sData.push(row);});
+  const last=sData.length-1;
+  const tr=new Array(SH.length).fill('');tr[BC]='Total';tr[BC+1]=nDocs;tr[BC+2]=sLines;tr[BC+3]=sQty;tr[BC+4]=sEx;tr[BC+5]=sVat;tr[BC+6]=sTot;
+  const totR=sData.length;sData.push(tr);
+  blocks.push({hRow,first,last,totR});
+ }
+ sData.push([]);
+ block('By RTV Type',d=>d.type);
+ block('By Salesman',d=>d.rep);
+ if(new Set(docInfo.map(d=>d.acct)).size>1)block('By Account',d=>d.acct);
  const wsS=XLSX.utils.aoa_to_sheet(sData);
- /* Auto-fit Summary columns: scan all rows and compute max content width */
- const sBase=[12,14,14,8,36,14,10,14,12,8,14,12,18,18,12];
+ SH.forEach((_,ci)=>styleCell(wsS,1,ci,makeHdrStyle(SC[ci]||'1F4E79')));
+ for(let ri=S0;ri<=S1&&ri<2+stats.length;ri++)SH.forEach((_,ci)=>{const ref=XLSX.utils.encode_cell({r:ri,c:ci});if(wsS[ref])wsS[ref].s=_cellStyle(NUMC[ci],ri%2===1);});
+ /* live totals band above the header */
+ SH.forEach((_,ci)=>styleCell(wsS,0,ci,_bandEmpty()));
+ _sub(wsS,0,0,103,1,S0,S1,nDocs,_bandStyle('0" RTV"',true));
+ _txt(wsS,0,10,'TOTAL ▸',_bandStyle(null,true));
+ [[11,sLines],[12,sQty],[13,sEx],[14,sVat],[15,sTot],[16,sPdfEx],[17,recRows.length?sDiff:0]].forEach(([c,v])=>_sub(wsS,0,c,109,c,S0,S1,v,_bandStyle(NUMC[c])));
+ /* simple, clean breakdown style */
+ const bHdr={font:{bold:true,color:{rgb:'1F3864'},name:'Arial',sz:10},fill:{patternType:'solid',fgColor:{rgb:'DDEBF7'}},alignment:{horizontal:'center',vertical:'center'},border:{bottom:{style:'medium',color:{rgb:'1F3864'}},top:{style:'thin',color:{rgb:'9BC2E6'}}}};
+ const bHdrL=Object.assign({},bHdr,{alignment:{horizontal:'left',vertical:'center'}});
+ const bRow=(nf)=>{const o={font:{name:'Arial',sz:10},alignment:{horizontal:nf?'right':'left',vertical:'center'},border:{bottom:{style:'hair',color:{rgb:'BFBFBF'}}}};if(nf)o.numFmt=nf;return o;};
+ const bTot=(nf)=>{const o={font:{bold:true,name:'Arial',sz:11,color:{rgb:'1F3864'}},alignment:{horizontal:nf?'right':'left',vertical:'center'},border:{top:{style:'thin',color:{rgb:'1F3864'}},bottom:{style:'double',color:{rgb:'1F3864'}}}};if(nf)o.numFmt=nf;return o;};
+ const BNF=[null,NF_QTY,NF_QTY,NF_QTY,NF_MONEY,NF_MONEY,NF_MONEY];
+ blocks.forEach(b=>{
+  for(let c=0;c<7;c++)styleCell(wsS,b.hRow,BC+c,c===0?bHdrL:bHdr);
+  for(let ri=b.first;ri<=b.last;ri++)for(let c=0;c<7;c++)styleCell(wsS,ri,BC+c,bRow(BNF[c]));
+  for(let c=0;c<7;c++)styleCell(wsS,b.totR,BC+c,bTot(BNF[c]));
+ });
+ const sBase=[12,15,10,11,8,30,13,9,9,15,13,9,11,16,13,18,16,12];
  wsS['!cols']=sBase.map((base,ci)=>{
   let maxLen=String(SH[ci]||'').length;
-  for(let ri=0;ri<sData.length;ri++){
-   const cell=sData[ri][ci];
-   if(cell==null)continue;
-   const s=typeof cell==='number'?cell.toFixed(2):String(cell);
-   if(s.length>maxLen)maxLen=s.length;
-  }
-  return{wch:Math.max(base,Math.min(50,maxLen+2))};
+  for(let ri=2;ri<sData.length;ri++){const cell=sData[ri]&&sData[ri][ci];if(cell==null||cell==='')continue;
+   const s=typeof cell==='number'?cell.toLocaleString('en-US',{minimumFractionDigits:2}):String(cell);if(s.length>maxLen)maxLen=s.length;}
+  return{wch:Math.max(base,Math.min(45,maxLen+2))};
  });
- SH.forEach((_,ci)=>styleCell(wsS,0,ci,makeHdrStyle(SC[ci]||'1F4E79')));
+ wsS['!rows']=[{hpt:26},{hpt:30}];
+ wsS['!autofilter']={ref:XLSX.utils.encode_range({s:{r:1,c:0},e:{r:S1,c:SH.length-1}})};
  XLSX.utils.book_append_sheet(wb,wsS,'Summary');
  if(typeof INCLUDE_NORTH_NQC==='undefined'||INCLUDE_NORTH_NQC) buildNorthNQC(wb, rows);
  buildNQCSheets(wb, rows);
@@ -2613,15 +2655,22 @@ async function injectLandscape(buf, sheetNames){
    const sheetFile = zip.file(sheetPath);
    if(!sheetFile)continue;
    let xml = await sheetFile.async('string');
+   /* fit-to-page flag must live in <sheetPr><pageSetUpPr/>, not on <pageSetup> (else Excel repairs the file) */
+   xml = xml.replace(/<pageSetup([^>]*?)\s+fitToPage="1"/g,'<pageSetup$1');
+   if(!/<pageSetUpPr/.test(xml)){
+    if(/<sheetPr[^>]*\/>/.test(xml)) xml = xml.replace(/<sheetPr([^>]*)\/>/, '<sheetPr$1><pageSetUpPr fitToPage="1"/></sheetPr>');
+    else if(/<sheetPr[^>]*>/.test(xml)) xml = xml.replace(/(<sheetPr[^>]*>)/, '$1<pageSetUpPr fitToPage="1"/>');
+    else xml = xml.replace(/(<worksheet[^>]*>)/, '$1<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>');
+   }
    if(xml.includes('<pageSetup')){
     /* Replace existing pageSetup */
-    xml = xml.replace(/<pageSetup[^/]*\/>/, '<pageSetup paperSize="9" orientation="landscape" fitToPage="1"/>');
+    xml = xml.replace(/<pageSetup[^/]*\/>/, '<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>');
    } else if(xml.includes('<pageMargins')){
     /* Insert pageSetup AFTER pageMargins (correct XLSX schema order) */
-    xml = xml.replace(/(<pageMargins[^/]*\/>)/, '$1<pageSetup paperSize="9" orientation="landscape" fitToPage="1"/>');
+    xml = xml.replace(/(<pageMargins[^/]*\/>)/, '$1<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>');
    } else {
     /* Insert pageMargins + pageSetup before </worksheet> */
-    xml = xml.replace('</worksheet>', '<pageMargins left="0.2" right="0.2" top="0.35" bottom="0.35" header="0.1" footer="0.1"/><pageSetup paperSize="9" orientation="landscape" fitToPage="1"/></worksheet>');
+    xml = xml.replace('</worksheet>', '<pageMargins left="0.2" right="0.2" top="0.35" bottom="0.35" header="0.1" footer="0.1"/><pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>');
    }
    zip.file(sheetPath, xml);
   }
@@ -2635,14 +2684,18 @@ async function injectLandscape(buf, sheetNames){
 /* ===== North-NQC consolidated reconciliation sheet ===== */
 function buildNorthNQC(wb, rows){
  const MNAMES=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
- function monthYear(d){ // rtv_date is DD/MM/YYYY
-  if(!d)return['',''];const p=String(d).split('/');
-  if(p.length===3){const m=parseInt(p[1]);return[MNAMES[(m-1)]||'',p[2]];}
+ function monthYear(d,iso){ // accepts ISO, DD/MM/YYYY or 7-Sep-26
+  if(iso&&/^\d{4}-\d{2}/.test(iso)){return[MNAMES[parseInt(iso.slice(5,7))-1]||'',iso.slice(0,4)];}
+  if(!d)return['',''];const t=String(d);
+  let m=t.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+  if(m){const y=m[3].length===2?'20'+m[3]:m[3];return[m[2].charAt(0).toUpperCase()+m[2].slice(1,3).toLowerCase(),y];}
+  const p=t.split(/[\/\-.]/);
+  if(p.length===3){if(p[0].length===4)return[MNAMES[parseInt(p[1])-1]||'',p[0]];let y=p[2];if(y.length===2)y='20'+y;return[MNAMES[(parseInt(p[1])-1)]||'',y];}
   return['',''];
  }
  const HDR=['Customer Code / AC #','Customer Name / Group','Customer Address / (Tier 3 name)',
   'Region','City','Site reference','Month','Year','WH','RTV','GCN','SKU ZREP','SKU Description',
-  'QTY in Pcs','Cs conversion','GS/Case','Pc Value','MLS value','Physical RTV value','Difference'];
+  'QTY in Pcs','Cs conversion','GS/Case','Pc Value','RTV Value (Excl. VAT)','Physical RTV value','Difference','RTV Type'];
  const body=[];
  let totQty=0,totMls=0;
  rows.forEach(r=>{
@@ -2651,61 +2704,71 @@ function buildNorthNQC(wb, rows){
   const conv=CONV_DB[zrep]||price.c||'';
   const gs=(price.g!=null)?price.g:'';
   const qty=Number(r.qty)||0;
-  let pcVal='';
-  if(gs!==''&&conv){pcVal=Math.round((gs/conv)*100)/100;}
-  else if(r.unit_price){pcVal=Math.round(Number(r.unit_price)*100)/100;}
-  let mls='';
-  if(pcVal!==''){mls=Math.round(qty*pcVal*100)/100;totMls+=mls;}
+  /* VALUE = the retailer's own RTV value exactly as in the original (Excel/PDF) — never the Mars price list.
+     GS/Case & Cs conversion stay as reference columns only. */
+  const mls=r2(Number(r.price_ex_vat)||0); totMls+=mls;
+  const pcVal=qty?Math.round(mls/qty*1000000)/1000000:(Number(r.unit_price)||0);
   totQty+=qty;
-  const[mo,yr]=monthYear(r.rtv_date);
+  const[mo,yr]=monthYear(r.rtv_date,r._iso);
   const rtvN=_refNorm(r.rtv_number);
   const gcn=GCN_DB[rtvN]||'';
   body.push([
    r.customer_code||'', r.account||'', r.store_num||'',
    r.region||'', r.city||'', '', mo, yr, '', r.rtv_number||'',
    gcn, zrep||'', r.mars_desc||r.description||'',
-   qty, conv||'', gs, pcVal, mls, '', ''
+   qty, conv||'', gs, pcVal, mls, '', '', r.rtv_type||rtvTypeForRows(r.rtv_number,[r])
   ]);
  });
- totQty=Math.round(totQty*100)/100; totMls=Math.round(totMls*100)/100;
+ totQty=Math.round(totQty*100)/100; totMls=r2(totMls);
  /* Totals row sits ABOVE the header (matches attached template) */
  const totalRow=new Array(HDR.length).fill('');
  totalRow[13]=totQty;      // QTY in Pcs total
  totalRow[17]=totMls;      // MLS value total
  totalRow[18]=0;           // Physical RTV value total (manual)
  totalRow[19]=Math.round((0-totMls)*100)/100; // Difference total
- const aoa=[totalRow,HDR,...body];
+ const aoa=[new Array(HDR.length).fill(''),HDR,...body];
  const ws=XLSX.utils.aoa_to_sheet(aoa);
+ const N0=2,N1=Math.max(2,body.length+1);
  /* ---- styling ---- */
  const navy='1F3864',hdrFill='1F4E79';
  function setStyle(rr,cc,s){const ref=XLSX.utils.encode_cell({r:rr,c:cc});if(ws[ref])ws[ref].s=s;}
  const bThin={top:{style:'thin',color:{rgb:'BFBFBF'}},bottom:{style:'thin',color:{rgb:'BFBFBF'}},left:{style:'thin',color:{rgb:'BFBFBF'}},right:{style:'thin',color:{rgb:'BFBFBF'}}};
  const hStyle={font:{bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:9},fill:{patternType:'solid',fgColor:{rgb:hdrFill}},alignment:{horizontal:'center',vertical:'center',wrapText:true},border:bThin};
- const tStyle={font:{bold:true,color:{rgb:'C00000'},name:'Arial',sz:10},fill:{patternType:'solid',fgColor:{rgb:'FFF2CC'}},alignment:{horizontal:'center',vertical:'center'},border:bThin};
+ const tStyle={numFmt:'#,##0.00',font:{bold:true,color:{rgb:'C00000'},name:'Arial',sz:12},fill:{patternType:'solid',fgColor:{rgb:'FFF2CC'}},alignment:{horizontal:'center',vertical:'center'},border:bThin};
  const cC={font:{name:'Arial',sz:9},alignment:{horizontal:'center',vertical:'center'},border:bThin};
  const cL={font:{name:'Arial',sz:9},alignment:{horizontal:'left',vertical:'center'},border:bThin};
  const cR={font:{name:'Arial',sz:9},alignment:{horizontal:'right',vertical:'center'},border:bThin};
  const cCa={font:{name:'Arial',sz:9},fill:{patternType:'solid',fgColor:{rgb:'EEF4FF'}},alignment:{horizontal:'center',vertical:'center'},border:bThin};
  const cLa={font:{name:'Arial',sz:9},fill:{patternType:'solid',fgColor:{rgb:'EEF4FF'}},alignment:{horizontal:'left',vertical:'center'},border:bThin};
  const cRa={font:{name:'Arial',sz:9},fill:{patternType:'solid',fgColor:{rgb:'EEF4FF'}},alignment:{horizontal:'right',vertical:'center'},border:bThin};
- /* totals row */
- for(let c=0;c<HDR.length;c++)setStyle(0,c,tStyle);
+ /* live totals band above the header — follows the filter automatically */
+ for(let c=0;c<HDR.length;c++)styleCell(ws,0,c,_bandEmpty());
+ _sub(ws,0,9,103,9,N0,N1,body.length,_bandStyle('0" lines"',true));
+ _txt(ws,0,12,'TOTAL ▸',_bandStyle(null,true));
+ _sub(ws,0,13,109,13,N0,N1,totQty,_bandStyle(NF_QTY));
+ _sub(ws,0,17,109,17,N0,N1,totMls,_bandStyle(NF_MONEY));
+ _sub(ws,0,18,109,18,N0,N1,0,_bandStyle(NF_MONEY));
+ ws[XLSX.utils.encode_cell({r:0,c:19})]={t:'n',v:r2(0-totMls),f:'S1-R1',s:_bandStyle(NF_MONEY)};
  /* header row */
  for(let c=0;c<HDR.length;c++)setStyle(1,c,hStyle);
  /* data rows */
  const leftCols=new Set([2,12]); // address + description
  const rightCols=new Set([15,16,17,18,19]); // numeric money/qty cols
+ const NQC_NF={13:NF_QTY,16:NF_UNIT,17:NF_MONEY,18:NF_MONEY,19:NF_MONEY};
  for(let i=0;i<body.length;i++){
   const rr=i+2,alt=i%2===1;
   for(let c=0;c<HDR.length;c++){
    let st = leftCols.has(c)?(alt?cLa:cL): rightCols.has(c)?(alt?cRa:cR):(alt?cCa:cC);
-   setStyle(rr,c,st);
+   if(NQC_NF[c])st=Object.assign({},st,{numFmt:NQC_NF[c]});
+   if(c===20)st=Object.assign({},st,{font:{bold:true,name:'Arial',sz:9,color:{rgb:body[i][20]==='1+1'?'7030A0':'C00000'}}});
+   styleCell(ws,rr,c,st);
   }
  }
- ws['!cols']=[{wch:13},{wch:16},{wch:30},{wch:10},{wch:14},{wch:11},{wch:7},{wch:7},{wch:6},{wch:15},{wch:12},{wch:11},{wch:40},{wch:9},{wch:8},{wch:10},{wch:9},{wch:11},{wch:13},{wch:11}];
- ws['!rows']=[{hpt:20},{hpt:30}];
+ styleCell(ws,1,20,Object.assign({},hStyle,{fill:{patternType:'solid',fgColor:{rgb:'7030A0'}}}));
+ ws['!cols']=[{wch:13},{wch:16},{wch:30},{wch:10},{wch:14},{wch:11},{wch:7},{wch:7},{wch:6},{wch:15},{wch:12},{wch:11},{wch:40},{wch:12},{wch:9},{wch:10},{wch:10},{wch:16},{wch:15},{wch:15},{wch:11}];
+ ws['!rows']=[{hpt:26},{hpt:30}];
  ws['!freeze']={xSplit:0,ySplit:2};
- ws['!autofilter']={ref:XLSX.utils.encode_range({s:{r:1,c:0},e:{r:1,c:HDR.length-1}})};
+ ws['!autofilter']={ref:XLSX.utils.encode_range({s:{r:1,c:0},e:{r:N1,c:HDR.length-1}})};
  XLSX.utils.book_append_sheet(wb,ws,'North-NQC');
 }
 
@@ -2717,6 +2780,7 @@ function buildNQCSheets(wb, rows){
     that genuinely appear in a single source PDF (e.g. Othaim 016007 occurs twice). */
  Object.entries(byRTV).forEach(([rtvNum,rtvRows])=>{
  const ws={},si=rtvRows[0];
+ const typ=rtvTypeForRows(rtvNum,rtvRows);
  function nv(v){return Number(v)||0;}
  function fmtN(v){return Number(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
  function b(s,c){return{top:{style:s,color:{rgb:c}},bottom:{style:s,color:{rgb:c}},left:{style:s,color:{rgb:c}},right:{style:s,color:{rgb:c}}};}
@@ -2751,7 +2815,7 @@ function buildNQCSheets(wb, rows){
  mg(0,0,2,4); sc(0,2,'RTV FORM',sRtvF);
  mg(0,0,5,8); sc(0,5,'MARS Saudi Arabia For Trading Co.LTD',sCo);
  mg(1,1,2,8); sc(1,2,'',mk(null,'1F3864',null,bN));
- mt(2,0);mt(2,1);mt(2,2); sc(2,3,'Customer Name:',sLbl); mg(2,2,4,8); sc(2,4,si.store_name||'',sVBlu);
+ sc(2,0,'RTV Type:',sLbl); sc(2,1,typ,mk({bold:true,color:{rgb:typ==='1+1'?'7030A0':'C00000'},name:'Arial',sz:10},typ==='1+1'?'EDE2F6':'FCE4E4',AC,bT)); mt(2,2); sc(2,3,'Customer Name:',sLbl); mg(2,2,4,8); sc(2,4,si.store_name||'',sVBlu);
  sc(3,0,'GCN No:',sLbl); sc(3,1,'',mk({bold:true,color:{rgb:'C00000'},name:'Arial',sz:9},null,AW,bT)); mt(3,2);
  sc(3,3,'Salesman Name:',sLbl); mg(3,3,4,8); sc(3,4,si.salesman||'',sVal);
  sc(4,0,'RTV No:',sLbl); sc(4,1,String(rtvNum),sRTV); mt(4,2);
@@ -2772,10 +2836,18 @@ function buildNQCSheets(wb, rows){
  const pcVal=r.unit_price||(r.qty?r2(nv(r.price_ex_vat)/nv(r.qty||1)):0);
  sc(dataRow,0,r.zrep||r.item_number||'',dc); sc(dataRow,1,r.category||'',dc); sc(dataRow,2,r.brand||'',dc);
  sc(dataRow,3,r.mars_desc||r.description||'',dl); sc(dataRow,4,nv(r.qty),dc,'n');
- sc(dataRow,5,r2(pcVal),dr,'n'); sc(dataRow,6,r.reason||'Expiry',dc);
+ sc(dataRow,5,Math.round(pcVal*1000000)/1000000,Object.assign({},dr,{numFmt:'#,##0.00####'}),'n'); sc(dataRow,6,r.reason||(typ==='1+1'?'1+1':'Expiry'),dc);
  sc(dataRow,7,r.expiry_date||'',dc); sc(dataRow,8,r2(nv(r.price_ex_vat)),dr,'n');
  dataRow++;
  });
+ /* bold TOTAL row under the item table: qty under QTY, amount under Total Amt */
+ const tR=dataRow;
+ const sTL=mk({bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:11},'1F3864',AC,bH);
+ const sTN=Object.assign(mk({bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:11},'1F3864',AR,bH),{numFmt:'#,##0.00'});
+ const sTQ=Object.assign(mk({bold:true,color:{rgb:'FFFFFF'},name:'Arial',sz:11},'1F3864',AC,bH),{numFmt:'#,##0'});
+ mg(tR,tR,0,3); sc(tR,0,'TOTAL  ('+rtvRows.length+' lines)',sTL); sc(tR,1,'',sTL); sc(tR,2,'',sTL); sc(tR,3,'',sTL);
+ sc(tR,4,totQty,sTQ,'n'); mg(tR,tR,5,7); sc(tR,5,'Excl. VAT',sTL); sc(tR,6,'',sTL); sc(tR,7,'',sTL); sc(tR,8,totExVAT,sTN,'n');
+ dataRow++;
  const gR=dataRow; mg(gR,gR,0,8); sc(gR,0,'',mk(null,'1F3864',null,bN));
  const s1=gR+1;
  mg(s1,s1,0,1); sc(s1,0,'Salesman',sSigH);
@@ -2798,6 +2870,7 @@ function buildNQCSheets(wb, rows){
  for(let i=2;i<=4;i++)ws['!rows'][i]={hpt:18};
  ws['!rows'][5]={hpt:26}; ws['!rows'][6]={hpt:26}; ws['!rows'][7]={hpt:4}; ws['!rows'][8]={hpt:28};
  for(let i=9;i<dataRow;i++)ws['!rows'][i]={hpt:14};
+ ws['!rows'][tR]={hpt:20};
  ws['!rows'][gR]={hpt:4}; ws['!rows'][s1]={hpt:20}; ws['!rows'][s2]={hpt:22}; ws['!rows'][s3]={hpt:22};
  ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:s3,c:8}});
  /* Page setup: A4 LANDSCAPE so the wide RTV table prints correctly without
@@ -3020,6 +3093,7 @@ function _renderNQCPrint(byRTV,keys,md={},pdfMode=false){
  const totQty =r2(rtvRows.reduce((s,r)=>s+(+r.qty||0),0));
  const totIncVAT=r2(rtvRows.reduce((s,r)=>s+(+r.total_incl_vat||0),0));
  const totExVAT =r2(rtvRows.reduce((s,r)=>s+(+r.price_ex_vat||0),0));
+ const typ=rtvTypeForRows(rtvNum,rtvRows);
  const dataRows=rtvRows.map((r,i)=>{
  const pcVal=r.unit_price||(r.qty?r2((+r.price_ex_vat||0)/(+r.qty||1)):0);
  const bg=i%2===1?'background:#ddeeff':'background:#fff';
@@ -3030,7 +3104,7 @@ function _renderNQCPrint(byRTV,keys,md={},pdfMode=false){
  <td style="text-align:left;${bg}">${r.mars_desc||r.description||''}</td>
  <td style="text-align:center;${bg}">${r.qty||''}</td>
  <td style="text-align:right;${bg}">${fmt(pcVal)}</td>
- <td style="text-align:center;${bg}">${r.reason||'Expiry'}</td>
+ <td style="text-align:center;${bg}">${r.reason||(typ==='1+1'?'1+1':'Expiry')}</td>
  <td style="text-align:center;${bg}">${r.expiry_date||''}</td>
  <td style="text-align:right;${bg}">${fmt(+r.price_ex_vat||0)}</td>
  </tr>`;
@@ -3064,7 +3138,7 @@ function _renderNQCPrint(byRTV,keys,md={},pdfMode=false){
  <td class="INC">Including VAT</td><td class="INCV">${fmt(totIncVAT)}</td>
 </tr><tr>
  <td class="L">Customer Region:</td><td class="VB" colspan="2">${si.city||si.region||''}</td>
- <td class="SP"></td><td></td>
+ <td class="SP"></td><td style="text-align:center;font-weight:900;font-size:10pt;color:${typ==='1+1'?'#7030A0':'#C00000'};background:${typ==='1+1'?'#EDE2F6':'#FCE4E4'};border:1.5px solid #888">${typ}</td>
  <td class="EXC">Excluding VAT</td><td class="EXCV">${fmt(totExVAT)}</td>
 </tr>
 </table>
@@ -3081,6 +3155,12 @@ function _renderNQCPrint(byRTV,keys,md={},pdfMode=false){
  <th style="width:52px">Total<br>Amt</th>
 </tr></thead>
 <tbody>${dataRows}</tbody>
+<tfoot><tr style="background:#1F3864;color:#fff;font-weight:900;font-size:9pt">
+ <td colspan="4" style="text-align:center;padding:3px">TOTAL (${rtvRows.length} lines) — RTV Type: ${typ}</td>
+ <td style="text-align:center">${totQty}</td>
+ <td colspan="3" style="text-align:center">Excl. VAT</td>
+ <td style="text-align:right">${fmt(totExVAT)}</td>
+</tr></tfoot>
 </table>
 <table class="t-sig">
 <tr>
@@ -3220,7 +3300,10 @@ function switchConvMode(m){
 
 /* ---- helpers ---- */
 function othNum(v){if(v==null)return 0;var s=String(v).replace(/,/g,'').replace(/[^\d.\-]/g,'');var n=parseFloat(s);return isNaN(n)?0:n;}
-function othDateISO(s){s=String(s).trim();var m=s.match(/(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/);if(m)return m[1]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[3]).slice(-2);m=s.match(/(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/);if(m)return m[3]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[1]).slice(-2);return '';}
+function othDateISO(s){
+  if(s instanceof Date&&!isNaN(s)){return s.getFullYear()+'-'+('0'+(s.getMonth()+1)).slice(-2)+'-'+('0'+s.getDate()).slice(-2);}
+  if(typeof s==='number'||/^\d{5}(\.\d+)?$/.test(String(s).trim())){var n=Number(s);if(n>20000&&n<80000){var d=new Date(Math.round((n-25569)*86400000));return d.getUTCFullYear()+'-'+('0'+(d.getUTCMonth()+1)).slice(-2)+'-'+('0'+d.getUTCDate()).slice(-2);}}
+  s=String(s==null?'':s).trim();var m=s.match(/(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/);if(m)return m[1]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[3]).slice(-2);m=s.match(/(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/);if(m)return m[3]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[1]).slice(-2);return '';}
 function othDMY(iso){if(!iso)return'';var p=iso.split('-');return p.length===3?(p[2]+'/'+p[1]+'/'+p[0]):iso;}
 function othRowISO(r){if(r._iso)return r._iso;var d=(typeof normDate==='function')?normDate(r.rtv_date||''):'';return d||'';}
 function othCleanName(s){s=String(s||'').trim();s=s.replace(/^\s*\d+\s*-\s*/,'');s=s.replace(/\s*-\s*(PCS|P\d+)\s*$/i,'');return s.trim();}
@@ -3228,8 +3311,23 @@ function othFmt(n){return (Math.round((n||0)*100)/100).toLocaleString('en-US',{m
 function othSetTxt(id,v){var e=document.getElementById(id);if(e)e.textContent=v;}
 var OTH_MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 function othFmtDMY(iso){if(!iso)return'';var p=String(iso).split('-');if(p.length!==3)return iso;var d=parseInt(p[2],10),m=parseInt(p[1],10),y=p[0].slice(-2);return (d||p[2])+'-'+(OTH_MONTHS[m-1]||p[1])+'-'+y;}
-/* classify an RTV as 1+1 (promotional) via GCN reference, else Expire */
-function othRtvType(rtv){try{var g=GCN_DB[String(rtv).trim()];if(g==null)g=GCN_DB[rtv];return (g!=null&&String(g).replace(/\s+/g,'')==='1+1')?'1+1':'Expire';}catch(e){return 'Expire';}}
+/* ---- RTV TYPE: 'Expired' or '1+1' ----
+   priority: 1) type written in the source file (Othaim export 'type' column)
+             2) GCN reference marked 1+1
+             3) content rule: an RTV made ONLY of Galaxy Jewels (جواهر) items is the 1+1 promo return
+             4) otherwise Expired */
+function rtvTypeNorm(v){var t=String(v==null?'':v).trim();if(!t||t==='0'||/^#N\/?A/i.test(t))return '';var c=t.replace(/\s+/g,'');
+  if(/1\+1|promo|عرض/i.test(c))return '1+1';if(/exp|منتهي|صلاحي|تالف/i.test(c))return 'Expired';return t;}
+function rtvIsJewels(r){var d=[r.description,r.mars_desc,r.name].join(' ');return /جواهر|JEWEL/i.test(d);}
+function rtvTypeForRows(rtv,rows){
+  for(var i=0;i<rows.length;i++){var t=rtvTypeNorm(rows[i].rtv_type);if(t)return t;}
+  try{var g=GCN_DB[String(rtv).trim()];if(g!=null&&String(g).replace(/\s+/g,'')==='1+1')return '1+1';}catch(e){}
+  if(rows.length&&rows.every(rtvIsJewels))return '1+1';
+  return 'Expired';
+}
+function othRtvType(rtv){var rs=(window._TYPE_ROWS&&window._TYPE_ROWS[rtv])||[];return rtvTypeForRows(rtv,rs);}
+function rtvTypeMap(rows){var by={},out={};rows.forEach(function(r){var k=String(r.rtv_number||'');(by[k]=by[k]||[]).push(r);});
+  Object.keys(by).forEach(function(k){out[k]=rtvTypeForRows(k,by[k]);by[k].forEach(function(r){r.rtv_type=out[k];});});window._TYPE_ROWS=by;return out;}
 
 /* ---- STORE DATA -> OTH_MAP + global STORE_COMPOSITE (fixes #80 Othaim/Farm, and gives PDF rows the right rep) ---- */
 function othStoreFromRows(rows){
@@ -3291,25 +3389,30 @@ function othParseHTMLTable(txt){
 function othRowsFromAOA(aoa){
   var hIdx=-1;
   for(var i=0;i<Math.min(aoa.length,12);i++){var j=aoa[i].join('|');if(j.indexOf('رقم المرتجع')>-1&&j.indexOf('الموقع')>-1){hIdx=i;break;}}
-  var col={rtv:0,code:1,name:2,qty:3,ex:4,site:5,sname:6,region:7,date:8};
+  var col={rtv:0,code:1,name:2,qty:3,ex:4,site:5,sname:6,region:7,date:8,rep:-1,type:-1};
   if(hIdx>-1){var H=aoa[hIdx];var find=function(p){for(var k=0;k<H.length;k++){if(p(String(H[k]||'')))return k;}return -1;};var c={};
     c.rtv=find(function(h){return h.indexOf('رقم المرتجع')>-1;});c.code=find(function(h){return h.indexOf('رقم الصنف')>-1;});
     c.name=find(function(h){return h==='الصنف'||(h.indexOf('الصنف')>-1&&h.indexOf('رقم')<0);});c.qty=find(function(h){return h.indexOf('الكمية')>-1;});
     c.ex=find(function(h){return h.indexOf('القيمة')>-1;});c.site=find(function(h){return h.indexOf('رقم الموقع')>-1;});
     c.sname=find(function(h){return h==='الموقع'||(h.indexOf('الموقع')>-1&&h.indexOf('رقم')<0);});c.region=find(function(h){return h.indexOf('المنطقة')>-1;});
     c.date=find(function(h){return h.indexOf('تاريخ المرتجع')>-1;});
+    c.rep=find(function(h){return /salesman|salsman|المندوب/i.test(h);});
+    c.type=find(function(h){return /^\s*type\s*$|نوع/i.test(h);});
     Object.keys(c).forEach(function(k){if(c[k]>-1)col[k]=c[k];});
   }
   var start=hIdx>-1?hIdx+1:2, out=[];
   for(var r=start;r<aoa.length;r++){var row=aoa[r];if(!row||!row.length)continue;
-    var rtv=String(row[col.rtv]||'').trim();
+    var rtv=String(row[col.rtv]==null?'':row[col.rtv]).trim().replace(/\.0+$/,'');
     if(rtv.indexOf('RTV Orders')>-1||rtv.indexOf('المرتجعات')>-1)continue;
+    if(/total|إجمالي|الاجمالي|المجموع/i.test(rtv))continue;
     var site=parseInt(String(row[col.site]||'').replace(/[^\d]/g,''));
     if(!rtv&&!site)continue;
     out.push({rtv:rtv,code:String(row[col.code]||'').trim(),name:String(row[col.name]||'').trim(),
       qty:othNum(row[col.qty]),ex:othNum(row[col.ex]),site:site||0,
       sname:String(row[col.sname]||'').trim(),region:String(row[col.region]||'').trim(),
-      date:othDateISO(String(row[col.date]||''))});
+      date:othDateISO(row[col.date]),
+      rep:col.rep>-1?String(row[col.rep]==null?'':row[col.rep]).trim():'',
+      type:col.type>-1?rtvTypeNorm(row[col.type]):''});
   }
   return out;
 }
@@ -3331,20 +3434,24 @@ function othBuildExcelPool(){
   var out=[], skipLines=0, skipSites={};
   OTH_ROWS.forEach(function(r){
     var info=OTH_MAP[r.site];
-    if(!info){skipLines++;skipSites[r.site]=1;return;}
+    if(!info){ /* new store not in STORE_DATA -> convert it anyway from the export's own data */
+      skipLines++;skipSites[r.site]=1;
+      var cty=(r.region&&r.region!=='--')?r.region:'';
+      info={name:r.site+'-OTH '+(r.sname||''),city:cty,region:'',code:'',salesman:'',_new:true};
+    }
     var ex=r2(r.ex), qty=r.qty||0;
     var row={rtv_date:othFmtDMY(r.date),rtv_number:r.rtv,po_number:'',internal_ref:'',
       store_num:r.site,store_name:info.name,city:info.city,region:info.region,
-      account:'Othaim',customer_code:info.code,salesman:info.salesman||'',
+      account:'Othaim',customer_code:info.code,salesman:String(info.salesman||r.rep||'').trim(),rtv_type:r.type||'',
       item_number:String(r.code||'').trim(),description:othCleanName(r.name),
-      qty:qty,unit:'PCS',unit_price:qty?r2(ex/qty):r2(ex),
+      qty:qty,unit:'PCS',unit_price:qty?Math.round(ex/qty*1000000)/1000000:r2(ex),
       price_ex_vat:ex,vat_amt:r2(ex*0.15),total_incl_vat:r2(ex*1.15)};
     if(typeof enrichRow==='function')enrichRow(row);
     row._iso=r.date||''; row._src='excel'; row._srcFile='__excel__';
     out.push(row);
   });
   OTH_EXCEL_POOL=out;
-  OTH_SKIP={lines:skipLines,sites:Object.keys(skipSites).length};
+  OTH_SKIP={lines:skipLines,sites:Object.keys(skipSites).length,list:Object.keys(skipSites)};
 }
 
 /* ---- PDF / markdown uploads (reuse the existing engine) ---- */
@@ -3484,7 +3591,7 @@ function othRenderReps(){
     wrap.innerHTML='<div style="color:#94a3b8;font-size:13px;padding:10px;text-align:center">لا توجد بيانات مطابقة للفلاتر الحالية</div>';
   }
   var note=document.getElementById('oth-skip-note');
-  if(note)note.innerHTML=OTH_SKIP.lines?('ℹ️ من ملف العثيم: تم استبعاد '+OTH_SKIP.lines+' سطر لمواقع خارج قائمتك ('+OTH_SKIP.sites+' موقع من مناطق أخرى).'):'';
+  if(note)note.innerHTML=OTH_SKIP.lines?('ℹ️ متاجر جديدة غير موجودة في STORE_DATA تم تحويلها مع باقي البيانات: '+(OTH_SKIP.list||[]).join('، ')+' ('+OTH_SKIP.lines+' سطر) — أضفها لملف STORE_DATA لإظهار كود العميل.'):'';
 }
 function othRepBtn(key,label,docN,lines,ex,accts,isAll){
   var b=document.createElement('button');
